@@ -3,6 +3,8 @@ import './globals.css';
 export const metadata = {
   title: 'Equilibrio FC',
   description: 'Partidos de fútbol amateur con equipos equilibrados',
+  icons: { icon: '/icon-192.png', apple: '/icon-180.png' },
+  appleWebApp: { capable: true, title: 'Equilibrio FC', statusBarStyle: 'black-translucent' as const },
 };
 
 export const viewport = {

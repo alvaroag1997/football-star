@@ -264,15 +264,17 @@ function NewMatch({ groups, call, flash, onClose, onCreated }: {
   const [players, setPlayers] = useState<Player[]>([]);
   const [sel, setSel] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
+  const preMod = useRef('');
 
   // Con varios grupos hay que elegir uno a propósito; con uno solo no hay duda posible.
   useEffect(() => { if (groups.length === 1) setGroupId(groups[0].id); }, [groups]);
   useEffect(() => {
     setPlayers([]);
     setSel([]);
+    preMod.current = '';
     if (!groupId) return;
     call<Player[]>(`/api/groups/${groupId}/players`)
-      .then((l) => { setPlayers(l); setSel(l.map((p) => p.id)); })
+      .then((l) => { setPlayers(l); setSel([]); })
       .catch((e) => flash(msg(e)));
   }, [groupId, call, flash]);
 
@@ -286,6 +288,18 @@ function NewMatch({ groups, call, flash, onClose, onCreated }: {
   const plan = n < 2 ? 'Elige al menos 2 jugadores.'
     : bench === 0 ? `${big} vs ${small} · sin suplentes`
       : `${big} vs ${small} · ${starters} titulares + ${bench} suplente${bench > 1 ? 's' : ''} por equipo`;
+  // La modalidad manda: se preselecciona justo 2 × titulares (5v5 → 10, 7v7 → 14, 11v11 → 22).
+  // Después se pueden añadir más como suplentes con "Todos" o marcándolos a mano.
+  const goStep2 = () => {
+    if (preMod.current !== `${groupId}|${mod}`) {
+      const want = MOD[mod].n * 2;
+      const gks = players.filter((p) => p.pos === 'GK').slice(0, 2);
+      const rest = players.filter((p) => !gks.includes(p));
+      setSel([...gks, ...rest].slice(0, want).map((p) => p.id));
+      preMod.current = `${groupId}|${mod}`;
+    }
+    setStep(2);
+  };
   const sorted = [...players].sort((a, b) => POS[a.pos].o - POS[b.pos].o || b.stars - a.stars);
 
   const generate = async () => {
@@ -304,7 +318,7 @@ function NewMatch({ groups, call, flash, onClose, onCreated }: {
 
   return (
     <>
-      <Hdr eyebrow={`Paso ${step} de 2`} title={step === 1 ? 'Nuevo partido' : 'Convocatoria'} onBack={() => (step === 2 ? setStep(1) : onClose())} />
+      <Hdr eyebrow={`Paso ${step} de 2`} title={step === 1 ? 'Nuevo partido' : `Convocatoria · ${MOD[mod].short}`} onBack={() => (step === 2 ? setStep(1) : onClose())} />
       <main className="main">
         {step === 1 ? (
           <>
@@ -365,7 +379,7 @@ function NewMatch({ groups, call, flash, onClose, onCreated }: {
       </main>
       <div className="foot">
         {step === 1 ? (
-          <button className="btn primary" disabled={!groupId || !date || !time} onClick={() => setStep(2)}>Elegir jugadores</button>
+          <button className="btn primary" disabled={!groupId || !date || !time} onClick={goStep2}>Elegir jugadores</button>
         ) : (
           <>
             <button className="btn" onClick={() => setStep(1)}>Atrás</button>
