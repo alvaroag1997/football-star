@@ -22,7 +22,8 @@ export const GET = handle(async (req) => {
             COALESCE((
               SELECT json_agg(json_build_object(
                        'entryId', x.id, 'name', x.name_snapshot, 'stars', x.stars_snapshot::float8,
-                       'photo', x.photo_snapshot, 'team', x.team, 'isStarter', x.is_starter)
+                       'photo', x.photo_snapshot, 'team', x.team, 'isStarter', x.is_starter,
+                       'pos', x.pos_snapshot, 'nick', x.nick_snapshot)
                      ORDER BY x.team, x.is_starter DESC, x.stars_snapshot DESC)
                 FROM match_players x WHERE x.match_id = m.id
             ), '[]'::json) AS roster

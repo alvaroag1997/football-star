@@ -5,6 +5,7 @@ import {
   assertGroup, loadConvocados, startersFor, fromAssignment, finishDueMatches,
 } from '@/lib/queries';
 import { balanceTeams, toSnapshotRows } from '@/lib/teamBalancer';
+import { statsOf } from '@/lib/matches';
 
 // Lista de partidos. Por defecto solo los pendientes (vista principal).
 // ?status=pending|cancelled  ·  ?groupId=...
@@ -51,11 +52,7 @@ export const POST = handle(async (req) => {
       ? fromAssignment(players, b.assignment, startersPerSide)
       : balanceTeams(players, { startersPerSide });
 
-    const balanceStats = {
-      sumA: result.teamA.sum, sumB: result.teamB.sum,
-      meanA: result.teamA.mean, meanB: result.teamB.mean,
-      diffSum: result.stats.diffSum, diffMean: result.stats.diffMean,
-    };
+    const balanceStats = statsOf(result);
     const m = await c.query(
       `INSERT INTO matches (group_id, scheduled_at, location, format, starters_per_side, balance_stats)
        VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
@@ -67,9 +64,10 @@ export const POST = handle(async (req) => {
     for (const r of toSnapshotRows(result)) {
       await c.query(
         `INSERT INTO match_players
-           (match_id, player_id, name_snapshot, stars_snapshot, photo_snapshot, team, is_starter)
-         VALUES ($1, $2, $3, $4, $5, $6, $7)`,
-        [matchId, r.playerId, r.name, r.stars, r.photo, r.team, r.isStarter]
+           (match_id, player_id, name_snapshot, stars_snapshot, photo_snapshot, team, is_starter,
+            pos_snapshot, nick_snapshot)
+         VALUES ($1, $2, $3, $4, $5, $6, $7, $8, $9)`,
+        [matchId, r.playerId, r.name, r.stars, r.photo, r.team, r.isStarter, r.pos, r.nick]
       );
     }
     return { id: matchId, scheduledAt: when.toISOString(), teams: result, balanceStats };

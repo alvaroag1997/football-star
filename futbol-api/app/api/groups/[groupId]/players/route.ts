@@ -1,7 +1,7 @@
 import { pool, tx } from '@/lib/db';
 import { handle, readBody, HttpError } from '@/lib/http';
 import { requireAdmin } from '@/lib/auth';
-import { assertGroup } from '@/lib/queries';
+import { assertGroup, parsePos } from '@/lib/queries';
 
 // Jugadores activos de UN grupo
 export const GET = handle(async (req, { params }) => {
@@ -9,7 +9,7 @@ export const GET = handle(async (req, { params }) => {
   const { groupId } = await params;
   await assertGroup(pool, adminId, groupId);
   const { rows } = await pool.query(
-    `SELECT p.id, p.name, p.photo_url AS "photoUrl", gp.stars::float8 AS stars
+    `SELECT p.id, p.name, p.nick, p.pos, p.photo_url AS "photoUrl", gp.stars::float8 AS stars
        FROM group_players gp JOIN players p ON p.id = gp.player_id
       WHERE gp.group_id = $1 AND gp.is_active AND p.is_active
       ORDER BY p.name`,
@@ -19,7 +19,7 @@ export const GET = handle(async (req, { params }) => {
 });
 
 // Añade un jugador al grupo. Con "playerId" reutiliza a una persona que ya
-// existe en otro grupo; sin él crea una nueva.
+// existe en otro grupo; sin él crea una nueva (name, nick?, pos?).
 export const POST = handle(async (req, { params }) => {
   const adminId = requireAdmin(req);
   const { groupId } = await params;
@@ -35,9 +35,10 @@ export const POST = handle(async (req, { params }) => {
       if (!r.rows.length) throw new HttpError(404, 'Jugador no encontrado');
     } else {
       if (typeof b.name !== 'string' || !b.name.trim()) throw new HttpError(400, 'name es obligatorio');
+      const nick = typeof b.nick === 'string' && b.nick.trim() ? b.nick.trim() : null;
       const r = await c.query(
-        'INSERT INTO players (admin_id, name, photo_url) VALUES ($1, $2, $3) RETURNING id',
-        [adminId, b.name.trim(), b.photoUrl ?? null]
+        'INSERT INTO players (admin_id, name, nick, pos, photo_url) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+        [adminId, b.name.trim(), nick, parsePos(b.pos), b.photoUrl ?? null]
       );
       playerId = r.rows[0].id;
     }

@@ -69,3 +69,12 @@ La web está en `app/components/App.tsx` y se sirve en `/`. Al abrirla pide la
 y Grupos; el botón "Crear partido" empieza por el desplegable de grupo.
 Se refresca cada 30 s, así que un partido pasa solo a Historial al llegar su hora
 y aparece el aviso "El partido ya se ha jugado. ¡Vota al MVP y registra el resultado!".
+
+## Actualización v1.3 (interfaz Equilibrio FC)
+
+**Antes de desplegar**, ejecuta una vez `supabase/04_migracion_v1.3.sql` en el SQL Editor de Supabase
+(añade posición y apodo a jugadores y a los snapshots de los partidos).
+
+Endpoints nuevos: `PATCH /api/matches/:id/teams`, `POST /api/matches/:id/regenerate`, `GET /api/stats?groupId=`.
+La interfaz (pasos: grupo → modalidad/fecha/lugar → convocatoria → equipos con titulares y suplentes,
+arrastrar y soltar, resultado y MVP, Historial, Plantilla, Estadísticas) está en `app/components/App.tsx`.

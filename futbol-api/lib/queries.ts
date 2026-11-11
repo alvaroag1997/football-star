@@ -1,10 +1,12 @@
 import { HttpError } from './http';
+import { evaluateSplit } from './teamBalancer';
 
 export type Db = {
   query: (text: string, params?: any[]) => Promise<{ rows: any[]; rowCount: number | null }>;
 };
 
-export type Convocado = { id: string; name: string; photo: string | null; stars: number };
+export type Pos = 'GK' | 'DEF' | 'ATT';
+export type Convocado = { id: string; name: string; photo: string | null; stars: number; pos: Pos; nick: string | null };
 
 const STARTERS: Record<string, number> = { '5v5': 5, '7v7': 7, '11v11': 11 };
 
@@ -12,6 +14,12 @@ export function startersFor(format: unknown): number {
   const n = typeof format === 'string' ? STARTERS[format] : undefined;
   if (!n) throw new HttpError(400, "format debe ser '5v5', '7v7' u '11v11'");
   return n;
+}
+
+export function parsePos(v: unknown): Pos {
+  if (v === undefined || v === null || v === '') return 'DEF';
+  if (v === 'GK' || v === 'DEF' || v === 'ATT') return v;
+  throw new HttpError(400, "pos debe ser 'GK', 'DEF' o 'ATT'");
 }
 
 /** Comprueba que el grupo existe, está activo y pertenece al admin. */
@@ -27,8 +35,7 @@ export async function assertGroup(db: Db, adminId: string, groupId: unknown) {
 
 /**
  * Carga los convocados SOLO desde el grupo elegido (aislamiento por grupo).
- * Las estrellas salen de group_players en este instante: ese valor es el que
- * se congela en el snapshot del partido.
+ * Las estrellas, la posición y el apodo salen de este instante: es lo que se congela en el snapshot.
  */
 export async function loadConvocados(db: Db, groupId: string, playerIds: unknown): Promise<Convocado[]> {
   if (!Array.isArray(playerIds) || playerIds.length < 2) {
@@ -38,7 +45,7 @@ export async function loadConvocados(db: Db, groupId: string, playerIds: unknown
   if (unique.length !== playerIds.length) throw new HttpError(400, 'Hay jugadores duplicados');
 
   const { rows } = await db.query(
-    `SELECT p.id, p.name, p.photo_url AS photo, gp.stars::float8 AS stars
+    `SELECT p.id, p.name, p.photo_url AS photo, p.pos, p.nick, gp.stars::float8 AS stars
        FROM group_players gp
        JOIN players p ON p.id = gp.player_id
       WHERE gp.group_id = $1 AND gp.is_active AND p.is_active
@@ -70,28 +77,7 @@ export function fromAssignment(
   if (!A.length || !B.length || all.size !== players.length || A.length + B.length !== players.length) {
     throw new HttpError(400, 'assignment debe repartir exactamente a los convocados entre A y B');
   }
-  const build = (team: Convocado[]) => {
-    const sorted = [...team].sort((x, y) => y.stars - x.stars);
-    const sum = sorted.reduce((a, p) => a + p.stars, 0);
-    return {
-      starters: sorted.slice(0, startersPerSide),
-      bench: sorted.slice(startersPerSide),
-      sum,
-      mean: sum / sorted.length,
-    };
-  };
-  const teamA = build(A);
-  const teamB = build(B);
-  return {
-    teamA,
-    teamB,
-    stats: {
-      diffSum: Math.abs(teamA.sum - teamB.sum),
-      diffMean: Math.abs(teamA.mean - teamB.mean),
-      sizeA: A.length,
-      sizeB: B.length,
-    },
-  };
+  return evaluateSplit(A, B, startersPerSide);
 }
 
 /** Pasa a "finished" los partidos vencidos (idempotente). */
