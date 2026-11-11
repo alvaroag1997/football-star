@@ -62,3 +62,10 @@ curl -X POST https://TU-PROYECTO.vercel.app/api/matches \
   cambiar por Supabase Auth tocando solo ese archivo.
 - **Votación de MVP por los jugadores:** la tabla `mvp_votes` ya existe; falta
   el endpoint.
+
+## Interfaz (móvil, dentro del mismo proyecto)
+La web está en `app/components/App.tsx` y se sirve en `/`. Al abrirla pide la
+`ADMIN_API_KEY` (se guarda solo en ese navegador). Pestañas: Partidos, Historial
+y Grupos; el botón "Crear partido" empieza por el desplegable de grupo.
+Se refresca cada 30 s, así que un partido pasa solo a Historial al llegar su hora
+y aparece el aviso "El partido ya se ha jugado. ¡Vota al MVP y registra el resultado!".
