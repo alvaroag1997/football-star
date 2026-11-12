@@ -22,15 +22,51 @@ export function parsePos(v: unknown): Pos {
   throw new HttpError(400, "pos debe ser 'GK', 'DEF' o 'ATT'");
 }
 
-/** Comprueba que el grupo existe, está activo y pertenece al admin. */
-export async function assertGroup(db: Db, adminId: string, groupId: unknown) {
-  if (typeof groupId !== 'string') throw new HttpError(400, 'groupId es obligatorio');
+export type Role = 'owner' | 'co_admin' | 'member';
+export type Need = 'member' | 'manager' | 'owner';
+export const isManager = (r: Role) => r === 'owner' || r === 'co_admin';
+
+const UUID_RE = /^[0-9a-f]{8}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{4}-[0-9a-f]{12}$/i;
+export function assertUuid(v: unknown, what = 'id'): string {
+  if (typeof v !== 'string' || !UUID_RE.test(v)) throw new HttpError(400, `${what} no es válido`);
+  return v;
+}
+
+/**
+ * Comprueba que el grupo existe, que el usuario es miembro activo y que tiene el rol pedido:
+ *  - member:  cualquier miembro
+ *  - manager: owner o co_admin (crear partidos, gestionar plantilla, invitación)
+ *  - owner:   solo el creador (borrar grupo, nombrar co-admins)
+ */
+export async function assertGroup(db: Db, playerId: string, groupId: unknown, need: Need = 'member') {
+  const id = assertUuid(groupId, 'groupId');
   const { rows } = await db.query(
-    'SELECT id, name FROM groups WHERE id = $1 AND admin_id = $2 AND is_active',
-    [groupId, adminId]
+    `SELECT g.id, g.name, gp.role
+       FROM groups g
+       JOIN group_players gp ON gp.group_id = g.id AND gp.player_id = $2 AND gp.is_active
+      WHERE g.id = $1 AND g.is_active`,
+    [id, playerId]
   );
-  if (!rows.length) throw new HttpError(404, 'Grupo no encontrado');
-  return rows[0] as { id: string; name: string };
+  if (!rows.length) throw new HttpError(404, 'Grupo no encontrado o no perteneces a él');
+  const g = rows[0] as { id: string; name: string; role: Role };
+  if (need === 'manager' && !isManager(g.role)) throw new HttpError(403, 'Solo el admin o los co-admins del grupo pueden hacer esto');
+  if (need === 'owner' && g.role !== 'owner') throw new HttpError(403, 'Solo el creador del grupo puede hacer esto');
+  return g;
+}
+
+/** Desactiva a los jugadores manuales que se hayan quedado sin ningún grupo (bug de huérfanos). */
+export async function deactivateOrphans(db: Db, playerIds: string[]) {
+  if (!playerIds.length) return 0;
+  const r = await db.query('SELECT deactivate_orphans($1::uuid[]) AS n', [playerIds]);
+  return Number(r.rows[0]?.n ?? 0);
+}
+
+/** Mensaje automático del sistema en el chat del grupo. */
+export async function systemMessage(db: Db, groupId: string, content: string, metadata: Record<string, unknown> = {}) {
+  await db.query(
+    `INSERT INTO chat_messages (group_id, type, content, metadata) VALUES ($1, 'system', $2, $3)`,
+    [groupId, content, JSON.stringify(metadata)]
+  );
 }
 
 /**

@@ -238,3 +238,51 @@ input::placeholder { color: #5d7667; }
   .toast, .team { transition: none; }
 }
 .trow.ro { grid-template-columns: auto minmax(0, 1fr) auto auto; }
+
+/* ===================== v1.3 · cuentas, chat y encuestas ===================== */
+input[type=datetime-local] { color-scheme: dark; }
+input:disabled { opacity: .55; }
+.nav.n5 { grid-template-columns: repeat(5, 1fr); gap: 2px; }
+.nav.n5 button { font-size: 10.5px; padding: 8px 0; }
+
+/* invitación */
+.invite-hero { display: flex; flex-direction: column; gap: 6px; border-color: #1f5c37; background: var(--grass-dim); text-align: center; align-items: center; }
+.invite-hero b { font: 700 30px/1 var(--display); text-transform: uppercase; letter-spacing: .03em; color: var(--grass); }
+.invite-hero small { color: var(--muted); }
+
+/* chat */
+.chatlist { gap: 4px; }
+.msgwrap { display: flex; flex-direction: column; align-items: flex-start; gap: 3px; }
+.msgwrap.mine { align-items: flex-end; }
+.who { font: 600 11.5px/1 var(--body); color: var(--grass); margin: 8px 6px 2px; }
+.bubble { max-width: 85%; padding: 8px 12px; border-radius: 16px 16px 16px 5px; background: var(--surface-2); border: 1px solid var(--line); white-space: pre-wrap; word-break: break-word; }
+.bubble small { display: block; text-align: right; font-size: 10px; color: var(--muted); margin-top: 2px; }
+.mine .bubble { border-radius: 16px 16px 5px 16px; background: var(--grass); border-color: var(--grass); color: var(--grass-ink); }
+.mine .bubble small { color: rgba(4, 20, 10, .6); }
+.daysep { align-self: stretch; text-align: center; font: 600 10.5px/1 var(--body); letter-spacing: .12em; text-transform: uppercase; color: var(--muted); margin: 12px 0 6px; }
+.sysmsg { align-self: center; max-width: 92%; display: flex; flex-direction: column; align-items: center; gap: 4px; text-align: center; margin: 6px 0; padding: 8px 14px; border-radius: 14px; background: var(--surface); border: 1px dashed var(--line-2); color: var(--muted); font-size: 12.5px; }
+.chatbar { display: flex; gap: 8px; align-items: flex-end; }
+.chatbar textarea { flex: 1; min-height: 42px; max-height: 120px; resize: none; padding: 10px 14px; border-radius: 14px; border: 1px solid var(--line-2); background: var(--surface-2); color: var(--fg); font: 15px/1.35 var(--body); }
+.chatbar .iconbtn { width: 42px; height: 42px; }
+.chatbar .send { background: var(--grass); border-color: var(--grass); color: var(--grass-ink); }
+.chatbar .send:disabled { opacity: .4; }
+
+/* encuestas */
+.pollcard { width: min(100%, 360px); display: flex; flex-direction: column; gap: 8px; border-color: #1f5c37; }
+.pollcard .pq { font: 700 20px/1.1 var(--display); text-transform: uppercase; letter-spacing: .02em; }
+.pcount { display: flex; align-items: baseline; gap: 8px; }
+.pcount b { font: 700 26px/1 var(--display); color: var(--grass); }
+.pcount span { color: var(--muted); font-size: 12.5px; }
+.pcount .chip { margin-left: auto; }
+.pvotes { display: grid; grid-template-columns: repeat(3, 1fr); gap: 6px; }
+.pvote { display: flex; flex-direction: column; align-items: center; gap: 2px; padding: 8px 4px; border-radius: 12px; border: 1px solid var(--line-2); background: var(--surface-2); font-size: 12px; font-weight: 600; text-align: center; }
+.pvote b { font: 700 18px/1 var(--display); }
+.pvote.on.yes { border-color: var(--grass); background: var(--grass-dim); color: var(--grass); }
+.pvote.on.no { border-color: #5a2a26; background: #251210; color: var(--bad); }
+.pvote.on.maybe { border-color: #5b3e18; background: #221708; color: var(--warn); }
+.pvote:disabled { opacity: .6; cursor: not-allowed; }
+.plist { display: flex; flex-direction: column; gap: 5px; }
+.plt { font: 600 10.5px/1 var(--body); letter-spacing: .1em; text-transform: uppercase; color: var(--muted); }
+.plt.ok { color: var(--grass); } .plt.wait { color: var(--warn); } .plt.maybe { color: var(--gold); } .plt.no { color: var(--bad); }
+.pchips { display: flex; flex-wrap: wrap; gap: 4px; }
+.pchip { padding: 3px 9px; border-radius: 99px; background: var(--surface-2); border: 1px solid var(--line); font-size: 12px; }

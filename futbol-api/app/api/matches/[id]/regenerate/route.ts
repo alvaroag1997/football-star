@@ -1,16 +1,16 @@
 import { pool, tx } from '@/lib/db';
 import { handle } from '@/lib/http';
-import { requireAdmin } from '@/lib/auth';
+import { requireUser } from '@/lib/auth';
 import { loadDetail, loadEntries, lockPending, saveSplit } from '@/lib/matches';
 import { balanceTeams } from '@/lib/teamBalancer';
 
 // "Regenerar": nuevo reparto equilibrado con los mismos convocados (usa los datos congelados del snapshot).
 export const POST = handle(async (req, { params }) => {
-  const adminId = requireAdmin(req);
+  const me = await requireUser(req);
   const { id } = await params;
 
   await tx(async (c) => {
-    const m = await lockPending(c, adminId, id);
+    const m = await lockPending(c, me.playerId, id);
     const entries = await loadEntries(c, id);
     const players = entries.map((e) => ({ id: e.id, name: e.name, stars: e.stars, pos: e.pos, photo: e.photo, nick: e.nick }));
     const key = (ids: string[]) => [...ids].sort().join(',');
@@ -29,5 +29,5 @@ export const POST = handle(async (req, { params }) => {
       [...t.starters, ...t.bench].map((p) => byId.get(p.id)!);
     await saveSplit(c, id, side(split.teamA), side(split.teamB), m.startersPerSide);
   });
-  return Response.json(await loadDetail(pool, adminId, id));
+  return Response.json(await loadDetail(pool, me.playerId, id));
 });

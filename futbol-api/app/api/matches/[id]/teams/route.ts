@@ -1,19 +1,19 @@
 import { pool, tx } from '@/lib/db';
 import { handle, readBody, HttpError } from '@/lib/http';
-import { requireAdmin } from '@/lib/auth';
+import { requireUser } from '@/lib/auth';
 import { loadDetail, loadEntries, lockPending, saveSplit } from '@/lib/matches';
 
 // Mover jugadores entre equipos (arrastrar, botón de intercambio) mientras el partido está pendiente.
 // Body: { A: string[], B: string[] }  ->  ids de la convocatoria (entryId), repartidos entre A y B.
 // El servidor recalcula titulares/suplentes y las estadísticas de equilibrio.
 export const PATCH = handle(async (req, { params }) => {
-  const adminId = requireAdmin(req);
+  const me = await requireUser(req);
   const { id } = await params;
   const b = await readBody(req);
   if (!Array.isArray(b.A) || !Array.isArray(b.B)) throw new HttpError(400, 'A y B deben ser listas');
 
   await tx(async (c) => {
-    const m = await lockPending(c, adminId, id);
+    const m = await lockPending(c, me.playerId, id);
     const entries = await loadEntries(c, id);
     const byId = new Map(entries.map((e) => [e.id, e]));
     const pick = (ids: unknown[]) =>
@@ -30,5 +30,5 @@ export const PATCH = handle(async (req, { params }) => {
     if (!A.length || !B.length) throw new HttpError(400, 'Cada equipo necesita al menos un jugador');
     await saveSplit(c, id, A, B, m.startersPerSide);
   });
-  return Response.json(await loadDetail(pool, adminId, id));
+  return Response.json(await loadDetail(pool, me.playerId, id));
 });

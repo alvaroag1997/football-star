@@ -1,15 +1,15 @@
 import { pool } from '@/lib/db';
 import { handle, HttpError } from '@/lib/http';
-import { requireAdmin } from '@/lib/auth';
-import { assertGroup, finishDueMatches } from '@/lib/queries';
+import { requireUser } from '@/lib/auth';
+import { assertGroup, finishDueMatches, isManager } from '@/lib/queries';
 
 // Estadísticas de los jugadores de un grupo, calculadas con los partidos finalizados que tienen resultado:
 // partidos jugados (pj), victorias (w) y veces MVP. Sirve para el ranking y los ajustes de estrellas sugeridos.
 export const GET = handle(async (req) => {
-  const adminId = requireAdmin(req);
+  const me = await requireUser(req);
   const groupId = new URL(req.url).searchParams.get('groupId');
   if (!groupId) throw new HttpError(400, 'groupId es obligatorio');
-  await assertGroup(pool, adminId, groupId);
+  const g = await assertGroup(pool, me.playerId, groupId);
   await finishDueMatches(pool);
 
   const { rows } = await pool.query(
@@ -27,5 +27,6 @@ export const GET = handle(async (req) => {
       ORDER BY p.name`,
     [groupId]
   );
-  return Response.json(rows);
+  // Las estrellas solo las ven el admin y los co-admins
+  return Response.json(isManager(g.role) ? rows : rows.map((r) => ({ ...r, stars: 0 })));
 });

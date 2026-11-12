@@ -17,19 +17,26 @@ export function statsOf(result: any) {
   };
 }
 
-/** Detalle de un partido con su convocatoria, siempre desde los snapshots. */
-export async function loadDetail(db: Db, adminId: string, id: string) {
+/**
+ * Detalle de un partido con su convocatoria, siempre desde los snapshots.
+ * Solo para miembros del grupo. Las estrellas solo las ven el admin y los co-admins.
+ */
+export async function loadDetail(db: Db, playerId: string, id: string) {
   const m = await db.query(
     `SELECT m.id, m.group_id AS "groupId", g.name AS "groupName", m.scheduled_at AS "scheduledAt",
             m.location, m.format, m.starters_per_side AS "startersPerSide", m.status,
             m.score_a AS "scoreA", m.score_b AS "scoreB", m.mvp_entry_id AS "mvpEntryId",
             m.balance_stats AS "balanceStats",
-            (m.status = 'finished' AND m.score_a IS NULL) AS "needsResult"
-       FROM matches m JOIN groups g ON g.id = m.group_id
-      WHERE m.id = $1 AND g.admin_id = $2`,
-    [id, adminId]
+            (m.status = 'finished' AND m.score_a IS NULL) AS "needsResult",
+            gp.role, (gp.role IN ('owner', 'co_admin')) AS "canManage"
+       FROM matches m
+       JOIN groups g ON g.id = m.group_id
+       JOIN group_players gp ON gp.group_id = g.id AND gp.player_id = $2 AND gp.is_active
+      WHERE m.id = $1`,
+    [id, playerId]
   );
   if (!m.rows.length) throw new HttpError(404, 'Partido no encontrado');
+  const canManage: boolean = m.rows[0].canManage;
   const roster = await db.query(
     `SELECT id AS "entryId", player_id AS "playerId", name_snapshot AS name, nick_snapshot AS nick,
             pos_snapshot AS pos, stars_snapshot::float8 AS stars, photo_snapshot AS photo,
@@ -38,17 +45,23 @@ export async function loadDetail(db: Db, adminId: string, id: string) {
       ORDER BY team, is_starter DESC, stars_snapshot DESC`,
     [id]
   );
+  if (!canManage) {
+    // Los miembros ven equipos y posiciones, pero no las estrellas ni las sumas.
+    return { ...m.rows[0], balanceStats: null, roster: roster.rows.map((r: any) => ({ ...r, stars: 0 })) };
+  }
   return { ...m.rows[0], roster: roster.rows };
 }
 
-/** Bloquea un partido que todavía se puede modificar (pendiente y antes de su hora). */
-export async function lockPending(db: Db, adminId: string, id: string) {
+/** Bloquea un partido que todavía se puede modificar (pendiente, antes de su hora, y el usuario es admin/co-admin). */
+export async function lockPending(db: Db, playerId: string, id: string) {
   const r = await db.query(
     `SELECT m.id, m.starters_per_side AS "startersPerSide"
-       FROM matches m JOIN groups g ON g.id = m.group_id
-      WHERE m.id = $1 AND g.admin_id = $2 AND m.status = 'pending' AND m.scheduled_at > now()
+       FROM matches m
+       JOIN group_players gp ON gp.group_id = m.group_id AND gp.player_id = $2 AND gp.is_active
+                            AND gp.role IN ('owner', 'co_admin')
+      WHERE m.id = $1 AND m.status = 'pending' AND m.scheduled_at > now()
       FOR UPDATE OF m`,
-    [id, adminId]
+    [id, playerId]
   );
   if (!r.rows.length) throw new HttpError(409, 'Solo se pueden modificar partidos pendientes que aún no han empezado');
   return r.rows[0] as { id: string; startersPerSide: number };
