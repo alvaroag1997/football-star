@@ -11,14 +11,14 @@ import {
 /* ================================ tipos ================================ */
 type Pos = 'GK' | 'DEF' | 'ATT';
 type Role = 'owner' | 'co_admin' | 'member';
-type Group = { id: string; name: string; players: number; role: Role; unreadChat: number; newMatches: number };
+type Group = { id: string; name: string; players: number; role: Role; unreadChat: number; newMatches: number; iconUrl?: string | null };
 type Player = {
   id: string; name: string; nick: string | null; pos: Pos; photoUrl: string | null; stars: number;
   role: Role; hasAccount: boolean; lastName: string | null; displayName: string;
 };
 type Me = {
   id: string; name: string; nick: string | null; lastName: string | null; displayName: string;
-  pos: Pos; level: number; email: string | null;
+  pos: Pos; level: number; email: string | null; photoUrl: string | null;
   notifyChat: boolean; notifyPolls: boolean; notifyMatches: boolean;
 };
 type Notif = {
@@ -26,12 +26,13 @@ type Notif = {
   title: string; body: string; data: { matchId?: string; pollId?: string }; readAt: string | null; createdAt: string;
 };
 type GuestDraft = { name: string; stars: number; pos: Pos };
-type GroupInfo = { id: string; name: string; players: number; role: Role; invite: { url: string; expiresAt: string | null } | null };
+type GroupInfo = { id: string; name: string; iconUrl: string | null; players: number; role: Role; invite: { url: string; expiresAt: string | null } | null };
 type Choice = 'yes' | 'no' | 'maybe';
 type PollUser = { id: string; name: string; nick: string | null; pos: Pos; votedAt: string; guest?: boolean; stars?: number };
 type Poll = {
   id: string; groupId: string; question: string; matchAt: string; format: string | null; maxSlots: number | null;
   status: 'open' | 'closed'; matchId: string | null; createdBy: string | null; createdAt: string;
+  location: string | null; notes: string | null; quorum: number; quorumNotified: boolean;
   counts: { yes: number; waitlist: number; maybe: number; no: number; guests?: number };
   confirmed: PollUser[]; waitlist: PollUser[]; maybe: PollUser[]; no: PollUser[];
   myVote: Choice | null; myStatus: Choice | 'waitlist' | null;
@@ -39,10 +40,13 @@ type Poll = {
 type ChatMsg = {
   id: string; groupId: string; playerId: string | null; type: 'text' | 'poll' | 'system'; content: string;
   pollId: string | null; metadata: { event?: string; matchId?: string; [k: string]: unknown }; createdAt: string;
-  authorName: string | null; authorNick: string | null; poll?: Poll | null;
+  authorName: string | null; authorNick: string | null; authorPhoto?: string | null; poll?: Poll | null;
 };
 /** Datos con los que se abre "Nuevo partido" desde una encuesta del chat */
-type Prefill = { groupId: string; when: string; playerIds: string[]; guests: GuestDraft[]; pollId: string; format: string | null };
+type Prefill = {
+  groupId: string; when: string; playerIds: string[]; guests: GuestDraft[]; pollId: string; format: string | null;
+  location: string | null; notes: string | null;
+};
 type Entry = {
   entryId: string; name: string; nick: string | null; pos: Pos; stars: number; photo: string | null;
   team: 'A' | 'B'; isStarter: boolean; isGuest?: boolean; playerId?: string | null;
@@ -136,6 +140,9 @@ const MIN_PLAYERS = 10;
 const badgeTxt = (n: number) => (n > 99 ? '+99' : String(n));
 const PENDING_INVITE = 'eqfc-pending-invite';
 const PUSH_DISMISSED = 'eqfc-push-dismissed';
+/** Jugadores necesarios por modalidad (aviso de quórum y cupo sugerido de la encuesta) */
+const QUORUM_N: Record<string, number> = { '5v5': 10, '7v7': 14, '11v11': 22 };
+const SEG_LABEL: Record<string, string> = { '5v5': 'Sala (5v5)', '7v7': 'Fútbol 7', '11v11': 'Fútbol 11' };
 
 /** Titulares primero; dentro de cada bloque, el portero arriba y luego por estrellas. */
 function sortTeam(list: Entry[]) {
@@ -197,6 +204,10 @@ const IC: Record<string, string> = {
   edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>',
   x: '<path d="M6 6l12 12M18 6L6 18"/>',
   mail: '<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M3.5 6.5l8.5 6.5 8.5-6.5"/>',
+  shield: '<path d="M12 3l7.5 3v5.5c0 4.6-3.2 8.3-7.5 9.5-4.3-1.2-7.5-4.9-7.5-9.5V6z"/>',
+  share: '<circle cx="18" cy="5.5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="18.5" r="2.5"/><path d="M8.2 10.8l7.6-4M8.2 13.2l7.6 4"/>',
+  camera: '<path d="M4 8h3l2-2.5h6L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
+  chevd: '<path d="M6 9l6 6 6-6"/>',
 };
 function Icon({ n }: { n: string }) {
   return (
@@ -228,10 +239,201 @@ function Stars({ v, size, onPick }: { v: number; size: number; onPick?: (v: numb
   );
 }
 
-function Av({ name }: { name: string }) {
+function Av({ name, url, size }: { name: string; url?: string | null; size?: number }) {
+  const dim = size ? ({ width: size, height: size, fontSize: Math.round(size * 0.36) } as CSSProperties) : undefined;
+  // eslint-disable-next-line @next/next/no-img-element
+  if (url) return <img className="av img" src={url} alt="" style={dim} loading="lazy" />;
   let h = 0;
   for (let i = 0; i < name.length; i++) h = (h * 31 + name.charCodeAt(i)) % 90;
-  return <span className="av" style={{ '--h': 95 + h } as CSSProperties}>{name.slice(0, 2).toUpperCase()}</span>;
+  return <span className="av" style={{ '--h': 95 + h, ...dim } as CSSProperties}>{name.slice(0, 2).toUpperCase()}</span>;
+}
+
+/** Escudo del grupo: su foto o un escudo de color con el que se reconoce de un vistazo. */
+function GroupIcon({ name, url, size = 40 }: { name: string; url?: string | null; size?: number }) {
+  const dim = { width: size, height: size } as CSSProperties;
+  // eslint-disable-next-line @next/next/no-img-element
+  if (url) return <img className="gicon img" src={url} alt="" style={dim} loading="lazy" />;
+  let h = 0;
+  for (let i = 0; i < name.length; i++) h = (h * 37 + name.charCodeAt(i)) % 360;
+  return <span className="gicon" style={{ ...dim, '--gh': h } as CSSProperties}><Icon n="shield" /></span>;
+}
+
+/* ============================ Desplegables propios (v1.6) ============================ */
+type PickOpt = { value: string; label: string; sub?: string; badge?: string; icon?: ReactNode };
+
+/**
+ * Sustituye a los <select> del navegador: botón + hoja inferior animada con la opción activa
+ * marcada. Se cierra al tocar fuera, con la X o con Escape.
+ */
+function Picker({ value, options, onChange, title, subtitle, placeholder = 'Elige…', id, footer, big, disabled }: {
+  value: string; options: PickOpt[]; onChange: (v: string) => void; title: string; subtitle?: string;
+  placeholder?: string; id?: string; footer?: ReactNode; big?: boolean; disabled?: boolean;
+}) {
+  const [open, setOpen] = useState(false);
+  const [closing, setClosing] = useState(false);
+  const cur = options.find((o) => o.value === value);
+  const close = useCallback(() => {
+    setClosing(true);
+    setTimeout(() => { setOpen(false); setClosing(false); }, 170);
+  }, []);
+  useEffect(() => {
+    if (!open) return;
+    const k = (e: KeyboardEvent) => { if (e.key === 'Escape') close(); };
+    window.addEventListener('keydown', k);
+    return () => window.removeEventListener('keydown', k);
+  }, [open, close]);
+
+  return (
+    <>
+      <button type="button" id={id} className={`picker${big ? ' big' : ''}`} disabled={disabled} aria-haspopup="listbox" aria-expanded={open}
+        onClick={() => setOpen(true)}>
+        {cur?.icon}
+        <span className="pk-txt">
+          <b>{cur ? cur.label : placeholder}{cur?.badge && <span className="chip ok">{cur.badge}</span>}</b>
+          {cur?.sub && <small>{cur.sub}</small>}
+        </span>
+        <span className="pk-caret"><Icon n="chevd" /></span>
+      </button>
+      {open && (
+        <div className={`pk-scrim${closing ? ' out' : ''}`} onClick={(e) => { if (e.target === e.currentTarget) close(); }}>
+          <div className="pk-sheet" role="dialog" aria-label={title}>
+            <i className="pk-grab" />
+            <div className="pk-head">
+              <div><b>{title}</b>{subtitle && <small>{subtitle}</small>}</div>
+              <button className="iconbtn round" onClick={close} aria-label="Cerrar"><Icon n="x" /></button>
+            </div>
+            <div className="pk-list" role="listbox">
+              {options.map((o) => (
+                <button key={o.value} role="option" aria-selected={o.value === value} className={`pk-opt${o.value === value ? ' on' : ''}`}
+                  onClick={() => { onChange(o.value); close(); }}>
+                  {o.icon}
+                  <span className="pk-txt"><b>{o.label}{o.badge && <span className="chip ok">{o.badge}</span>}</b>{o.sub && <small>{o.sub}</small>}</span>
+                  {o.value === value && <span className="pk-check"><Icon n="check" /></span>}
+                </button>
+              ))}
+              {options.length === 0 && <div className="empty">No hay opciones</div>}
+            </div>
+            {footer && <div className="pk-foot" onClick={close}>{footer}</div>}
+          </div>
+        </div>
+      )}
+    </>
+  );
+}
+
+const STAR_OPTS: PickOpt[] = [1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5].map((v) => ({
+  value: String(v), label: `${f1(v)} ★`, sub: v >= 4.5 ? 'Crack' : v >= 3.5 ? 'Bueno' : v >= 2.5 ? 'Normal' : 'Aprendiendo',
+}));
+
+/* ============================ Fotos (Supabase Storage) ============================ */
+/** Recorta al centro y reduce a 400x400 (WebP, o JPEG si el navegador no sabe WebP). */
+async function compressImage(file: File, size = 400): Promise<Blob> {
+  const url = URL.createObjectURL(file);
+  try {
+    const img = await new Promise<HTMLImageElement>((ok, ko) => {
+      const i = new Image();
+      i.onload = () => ok(i);
+      i.onerror = () => ko(new Error('No se pudo leer la imagen'));
+      i.src = url;
+    });
+    const side = Math.min(img.naturalWidth, img.naturalHeight);
+    const canvas = document.createElement('canvas');
+    canvas.width = canvas.height = Math.min(size, side);
+    const ctx = canvas.getContext('2d');
+    if (!ctx) throw new Error('Tu navegador no puede procesar la imagen');
+    ctx.drawImage(img, (img.naturalWidth - side) / 2, (img.naturalHeight - side) / 2, side, side, 0, 0, canvas.width, canvas.height);
+    const toBlob = (type: string) => new Promise<Blob | null>((ok) => canvas.toBlob(ok, type, 0.85));
+    const webp = await toBlob('image/webp');
+    const out = webp && webp.type === 'image/webp' ? webp : await toBlob('image/jpeg');
+    if (!out) throw new Error('No se pudo comprimir la imagen');
+    return out;
+  } finally {
+    URL.revokeObjectURL(url);
+  }
+}
+
+/** Borra las fotos anteriores de la carpeta (se guarda solo la actual). */
+async function cleanFolder(folder: string, keep?: string) {
+  const bucket = sb().storage.from('avatars');
+  const { data } = await bucket.list(folder);
+  const old = (data ?? []).map((f: { name: string }) => `${folder}/${f.name}`).filter((p: string) => p !== keep);
+  if (old.length) await bucket.remove(old);
+}
+
+/**
+ * Elegir, previsualizar (círculo) y guardar una foto: perfil (users/<cuenta>) o escudo (groups/<grupo>).
+ * La imagen se comprime en el móvil antes de subirla, así carga al instante.
+ */
+function ImageUploader({ current, name, folder, kind, flash, onSave }: {
+  current: string | null; name: string; folder: string | null; kind: 'user' | 'group';
+  flash: (m: string) => void; onSave: (url: string | null) => Promise<void>;
+}) {
+  const [preview, setPreview] = useState<string | null>(null);
+  const [blob, setBlob] = useState<Blob | null>(null);
+  const [busy, setBusy] = useState(false);
+  const input = useRef<HTMLInputElement>(null);
+  useEffect(() => () => { if (preview) URL.revokeObjectURL(preview); }, [preview]);
+
+  const pick = async (f?: File) => {
+    if (!f) return;
+    if (!f.type.startsWith('image/')) { flash('Elige una imagen'); return; }
+    try {
+      const b = await compressImage(f);
+      setBlob(b);
+      setPreview(URL.createObjectURL(b));
+    } catch (e) { flash(msg(e)); }
+  };
+  const save = async () => {
+    if (!blob || !folder) return;
+    setBusy(true);
+    try {
+      const path = `${folder}/${Date.now()}.${blob.type === 'image/webp' ? 'webp' : 'jpg'}`;
+      const bucket = sb().storage.from('avatars');
+      const { error } = await bucket.upload(path, blob, { contentType: blob.type, cacheControl: '31536000', upsert: false });
+      if (error) throw new Error(error.message);
+      await onSave(bucket.getPublicUrl(path).data.publicUrl);
+      cleanFolder(folder, path).catch(() => undefined);
+      setBlob(null);
+      setPreview(null);
+      flash(kind === 'user' ? 'Foto de perfil guardada' : 'Escudo del grupo guardado');
+    } catch (e) { flash(msg(e)); } finally { setBusy(false); }
+  };
+  const remove = async () => {
+    if (!folder || !confirm('¿Quitar la foto?')) return;
+    setBusy(true);
+    try {
+      await onSave(null);
+      cleanFolder(folder).catch(() => undefined);
+      flash('Foto eliminada');
+    } catch (e) { flash(msg(e)); } finally { setBusy(false); }
+  };
+
+  const shown = preview ?? current;
+  return (
+    <div className="uploader">
+      <button type="button" className={`upl-pic${preview ? ' pending' : ''}`} onClick={() => input.current?.click()} aria-label="Elegir foto">
+        {kind === 'user' ? <Av name={name} url={shown} size={76} /> : <GroupIcon name={name} url={shown} size={76} />}
+        <span className="upl-cam"><Icon n="camera" /></span>
+      </button>
+      <div className="upl-actions">
+        {preview ? (
+          <>
+            <span className="note">Vista previa · aún sin guardar</span>
+            <div className="two">
+              <button className="btn primary sm" disabled={busy} onClick={save}>{busy ? 'Subiendo…' : 'Guardar foto'}</button>
+              <button className="btn ghost sm" disabled={busy} onClick={() => { setPreview(null); setBlob(null); }}>Cancelar</button>
+            </div>
+          </>
+        ) : (
+          <div className="two">
+            <button className="btn sm" onClick={() => input.current?.click()}>{current ? 'Cambiar foto' : 'Subir foto'}</button>
+            {current && <button className="btn ghost sm" disabled={busy} onClick={remove}>Quitar</button>}
+          </div>
+        )}
+      </div>
+      <input ref={input} type="file" accept="image/*" hidden onChange={(e) => { pick(e.target.files?.[0]); e.target.value = ''; }} />
+    </div>
+  );
 }
 const PosChip = ({ pos }: { pos: Pos }) => <span className={`chip${pos === 'GK' ? ' gk' : ''}`}>{POS[pos].short}</span>;
 
@@ -258,14 +460,22 @@ function SheetShell({ title, onClose, children }: { title: string; onClose: () =
   );
 }
 
-function GroupSelect({ groups, value, onChange, label = 'Grupo' }: { groups: Group[]; value: string; onChange: (v: string) => void; label?: string }) {
+const groupOpts = (groups: Group[]): PickOpt[] => groups.map((g) => ({
+  value: g.id, label: g.name, icon: <GroupIcon name={g.name} url={g.iconUrl} />,
+  badge: g.role === 'member' ? undefined : ROLE_LABEL[g.role],
+  sub: `${g.players} jugadores${g.unreadChat ? ` · ${badgeTxt(g.unreadChat)} sin leer` : ''}`,
+}));
+
+/** Selector de grupo (hoja inferior con escudos, rol y "Crear nuevo grupo"). */
+function GroupSelect({ groups, value, onChange, label = 'Grupo', onCreate }: {
+  groups: Group[]; value: string; onChange: (v: string) => void; label?: string; onCreate?: () => void;
+}) {
   return (
-    <div>
-      <label htmlFor="g-sel">{label}</label>
-      <select id="g-sel" value={value} onChange={(e) => onChange(e.target.value)}>
-        {groups.length === 0 && <option value="">Sin grupos</option>}
-        {groups.map((g) => <option key={g.id} value={g.id}>{g.name} ({g.players})</option>)}
-      </select>
+    <div className="gsel">
+      <div className="lbl">{label}</div>
+      <Picker big value={value} onChange={onChange} options={groupOpts(groups)} title="Cambiar de grupo"
+        subtitle="Selecciona el grupo activo o crea uno nuevo" placeholder={groups.length ? 'Elige un grupo…' : 'Sin grupos'}
+        footer={onCreate && <button className="btn primary block" onClick={onCreate}><Icon n="plus" /> Crear nuevo grupo</button>} />
     </div>
   );
 }
@@ -443,9 +653,8 @@ function GuestForm({ onAdd, busy }: { onAdd: (g: GuestDraft) => void | Promise<v
     <div className="guestform">
       <input value={name} maxLength={60} placeholder="Nombre del invitado" onChange={(e) => setName(e.target.value)}
         onKeyDown={(e) => { if (e.key === 'Enter') add(); }} aria-label="Nombre del invitado" />
-      <select value={stars} onChange={(e) => setStars(Number(e.target.value))} aria-label="Estrellas del invitado">
-        {[1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5].map((v) => <option key={v} value={v}>{f1(v)}★</option>)}
-      </select>
+      <Picker value={String(stars)} onChange={(v) => setStars(Number(v))} options={STAR_OPTS} title="Valoración del invitado"
+        subtitle="Por defecto 3 estrellas" />
       <button className={`btn sm${gk ? ' primary' : ''}`} onClick={() => setGk(!gk)} title="¿Es portero?">🧤</button>
       <button className="btn sm" disabled={!name.trim() || busy} onClick={add}><Icon n="plus" /></button>
     </div>
@@ -486,7 +695,8 @@ function NewMatch({ groups, prefill, call, flash, onClose, onCreated }: {
     return fromPoll && isFutureDT(fromPoll) ? fromPoll : `${nextThursday()}T21:00`;
   });
   const [minWhen, setMinWhen] = useState(minDT);
-  const [venue, setVenue] = useState('');
+  const [venue, setVenue] = useState(prefill?.location ?? '');
+  const [notes, setNotes] = useState(prefill?.notes ?? '');
   const [players, setPlayers] = useState<Player[]>([]);
   const [sel, setSel] = useState<string[]>([]);
   const [busy, setBusy] = useState(false);
@@ -544,7 +754,7 @@ function NewMatch({ groups, prefill, call, flash, onClose, onCreated }: {
     setBusy(true);
     try {
       const r = await call<{ id: string }>('/api/matches', 'POST', {
-        groupId, format: mod, playerIds: sel, guests, location: venue.trim() || null,
+        groupId, format: mod, playerIds: sel, guests, location: venue.trim() || null, notes: notes.trim() || null,
         scheduledAt: new Date(when).toISOString(),
         pollId: prefill?.pollId ?? null,
       });
@@ -562,13 +772,11 @@ function NewMatch({ groups, prefill, call, flash, onClose, onCreated }: {
         {step === 1 ? (
           <>
             <div className="card form">
-              <label htmlFor="d-group">Grupo</label>
-              <select id="d-group" value={groupId} onChange={(e) => setGroupId(e.target.value)}>
-                <option value="">Elige un grupo…</option>
-                {groups.map((g) => <option key={g.id} value={g.id}>{g.name} ({g.players} jugadores)</option>)}
-              </select>
+              <div className="lbl">Grupo</div>
+              <Picker big id="d-group" value={groupId} onChange={setGroupId} options={groupOpts(groups)} title="¿En qué grupo?"
+                subtitle="Grupos en los que eres admin o co-admin" placeholder="Elige un grupo…" />
               {groups.length === 0 && <div className="warnbox" style={{ marginTop: 6 }}><Icon n="warn" /><span>No administras ningún grupo. Crea uno en la pestaña Plantilla.</span></div>}
-              {prefill && <div className="note" style={{ marginTop: 6 }}><Icon n="poll" /><span>{prefill.playerIds.length} confirmados{prefill.guests.length ? ` y ${prefill.guests.length} invitados` : ''} en la encuesta. Puedes ajustar la convocatoria en el paso 2 y, una vez creado, editarlo todo (equipos, titulares y suplentes).</span></div>}
+              {prefill && <div className="note" style={{ marginTop: 6 }}><Icon n="poll" /><span>Datos de la encuesta ya puestos: fecha, modalidad{prefill.location ? ', lugar' : ''}{prefill.notes ? ', notas' : ''} y {prefill.playerIds.length} confirmados{prefill.guests.length ? ` + ${prefill.guests.length} invitados` : ''}. Revisa y pulsa “Elegir jugadores”.</span></div>}
             </div>
             {groupId && (
               <div className="card form">
@@ -587,6 +795,8 @@ function NewMatch({ groups, prefill, call, flash, onClose, onCreated }: {
                 <label htmlFor="d-venue" style={{ marginTop: 6 }}>Lugar</label>
                 <input id="d-venue" placeholder="Pista, polideportivo o dirección" value={venue} onChange={(e) => setVenue(e.target.value)} autoComplete="off" />
                 <a className="maps" target="_blank" rel="noopener noreferrer" href={mapsUrl(venue)} hidden={!venue.trim()}><Icon n="pin" /> Ver en Google Maps</a>
+                <label htmlFor="d-notes" style={{ marginTop: 6 }}>Notas / precio <span className="lockt">opcional</span></label>
+                <input id="d-notes" placeholder="4 € por persona · traed peto blanco y oscuro" value={notes} maxLength={500} onChange={(e) => setNotes(e.target.value)} autoComplete="off" />
               </div>
             )}
           </>
@@ -609,7 +819,7 @@ function NewMatch({ groups, prefill, call, flash, onClose, onCreated }: {
               return (
                 <button key={p.id} className={`prow sel${on ? ' on' : ''}`} onClick={() => toggle(p.id)} aria-pressed={on}>
                   <span className="cb"><Icon n="check" /></span>
-                  <Av name={p.displayName ?? p.name} />
+                  <Av name={p.displayName ?? p.name} url={p.photoUrl} />
                   <span className="pname"><b>{p.displayName ?? p.name}</b><small>{POS[p.pos].label}{prefill?.playerIds.includes(p.id) ? ' · se apuntó' : ''}</small></span>
                   <PosChip pos={p.pos} />
                   <span className="rate">{f1(p.stars)}</span>
@@ -646,7 +856,7 @@ function TeamPanel({ side, list, editable, anim, offset, onSwap, showStars = tru
     <div key={p.entryId} className={`trow${editable ? '' : ' ro'}${anim ? ' reveal' : ''}${p.isStarter ? '' : ' bench'}`}
       data-eid={p.entryId} style={{ '--i': i + offset } as CSSProperties}>
       {editable && <span className="grip" data-handle="1" title="Arrastra para cambiar de equipo"><Icon n="grip" /></span>}
-      <Av name={p.name} />
+      <Av name={p.name} url={p.photo} />
       <span className="pname"><b>{p.name}</b><small>{p.isGuest ? 'Invitado' : p.nick && !p.name.includes(p.nick) ? p.nick : POS[p.pos].label}</small></span>
       <PosChip pos={p.pos} />
       {showStars ? <span className="rate">{f1(p.stars)}</span> : <span />}
@@ -1002,8 +1212,8 @@ function MatchEditor({ id, call, flash, onClose, onSaved }: {
     const team = smaller();
     setRows((l) => [...l, { ...r, team, isStarter: l.filter((x) => x.team === team && x.isStarter).length < per }]);
   };
-  const addMember = () => {
-    const m = members.find((x) => x.id === addId);
+  const addMember = (id: string) => {
+    const m = members.find((x) => x.id === id);
     if (!m) return;
     addRow({ key: `new:${m.id}`, playerId: m.id, name: m.displayName ?? m.name, pos: m.pos, stars: Math.min(5, Math.max(1, m.stars)), isGuest: false });
     setAddId('');
@@ -1077,7 +1287,7 @@ function MatchEditor({ id, call, flash, onClose, onSaved }: {
           {!isFutureDT(when) && <div className="warnbox"><Icon n="warn" /><span>Elige una fecha y hora posteriores a este momento.</span></div>}
           <div className="lbl" style={{ marginTop: 6 }}>Modalidad</div>
           <div className="seg">
-            {Object.keys(MOD).map((k) => <button key={k} className={mod === k ? 'on' : ''} onClick={() => setMod(k)}>{MOD[k].short}</button>)}
+            {Object.keys(MOD).map((k) => <button key={k} className={mod === k ? 'on' : ''} onClick={() => setMod(k)}>{SEG_LABEL[k]}</button>)}
           </div>
           <label htmlFor="e-venue" style={{ marginTop: 6 }}>Lugar / campo</label>
           <input id="e-venue" value={venue} maxLength={200} onChange={(e) => setVenue(e.target.value)} placeholder="Pista, polideportivo o dirección" />
@@ -1095,13 +1305,12 @@ function MatchEditor({ id, call, flash, onClose, onSaved }: {
 
         <div className="card form">
           <div className="lbl">Añadir jugador del grupo</div>
-          <div className="two">
-            <select value={addId} onChange={(e) => setAddId(e.target.value)} aria-label="Jugador del grupo">
-              <option value="">{available.length ? 'Elige un jugador…' : 'Ya están todos convocados'}</option>
-              {available.map((m) => <option key={m.id} value={m.id}>{m.displayName ?? m.name} · {f1(m.stars)}★</option>)}
-            </select>
-            <button className="btn sm" disabled={!addId} onClick={addMember}><Icon n="plus" /> Añadir</button>
-          </div>
+          <Picker value={addId} onChange={addMember} title="Añadir jugador del grupo" subtitle="Entra como suplente si su equipo ya está completo"
+            placeholder={available.length ? 'Elige un jugador…' : 'Ya están todos convocados'} disabled={!available.length}
+            options={available.map((m) => ({
+              value: m.id, label: m.displayName ?? m.name, sub: `${POS[m.pos].label} · ${f1(m.stars)}★`,
+              icon: <Av name={m.displayName ?? m.name} url={m.photoUrl} />,
+            }))} />
           <div className="lbl" style={{ marginTop: 6 }}>Añadir invitado externo</div>
           <GuestForm onAdd={addGuest} />
         </div>
@@ -1174,8 +1383,8 @@ function PushSettings({ me, call, flash, onSaved }: { me: Me; call: Call; flash:
 
       <div className="lbl" style={{ marginTop: 8 }}>Avisarme de…</div>
       {([
-        ['notifyMatches', 'Partidos nuevos y cambios'],
-        ['notifyPolls', 'Encuestas nuevas'],
+        ['notifyMatches', 'Partidos nuevos, cambios y “¡ya somos 10!”'],
+        ['notifyPolls', 'Encuestas nuevas y nuevos miembros'],
         ['notifyChat', 'Mensajes del chat'],
       ] as [keyof typeof prefs, string][]).map(([k, label]) => (
         <button key={k} className={`togglerow${prefs[k] ? ' on' : ''}`} onClick={() => toggle(k)} aria-pressed={prefs[k]}>
@@ -1323,10 +1532,8 @@ function PlayerSheet({ init, groupId, myRole, meId, accounts, call, flash, onClo
       {s.id && !s.hasAccount && accounts.length > 0 && (
         <div className="card form" style={{ marginTop: 10 }}>
           <label htmlFor="f-merge">¿Se ha registrado? Unir con su cuenta</label>
-          <select id="f-merge" value={mergeInto} onChange={(e) => setMergeInto(e.target.value)}>
-            <option value="">Elige su cuenta…</option>
-            {accounts.map((a) => <option key={a.id} value={a.id}>{a.displayName ?? a.name}</option>)}
-          </select>
+          <Picker id="f-merge" value={mergeInto} onChange={setMergeInto} title="¿Cuál es su cuenta?" placeholder="Elige su cuenta…"
+            options={accounts.map((a) => ({ value: a.id, label: a.displayName ?? a.name, icon: <Av name={a.displayName ?? a.name} url={a.photoUrl} /> }))} />
           <button className="btn sm" disabled={!mergeInto || busy} onClick={merge}>Unir (conserva su historial)</button>
         </div>
       )}
@@ -1338,34 +1545,61 @@ function PlayerSheet({ init, groupId, myRole, meId, accounts, call, flash, onClo
   );
 }
 
+/** Marcador editable libremente (se puede borrar del todo) con botones −/+ para el móvil. */
+function ScoreInput({ id, label, color, value, onChange }: {
+  id: string; label: string; color: string; value: string; onChange: (v: string) => void;
+}) {
+  const n = value === '' ? null : Number(value);
+  const step = (d: number) => onChange(String(Math.min(99, Math.max(0, (n ?? 0) + d))));
+  return (
+    <div className="score-in">
+      <label htmlFor={id} style={{ color }}>{label}</label>
+      <div className="score-row">
+        <button type="button" className="iconbtn" onClick={() => step(-1)} disabled={!n} aria-label={`Restar gol a ${label}`}>−</button>
+        <input id={id} type="text" inputMode="numeric" pattern="[0-9]*" autoComplete="off" placeholder="–" value={value}
+          onChange={(e) => onChange(e.target.value.replace(/\D/g, '').slice(0, 2))} aria-label={`Goles ${label}`} />
+        <button type="button" className="iconbtn" onClick={() => step(1)} disabled={n === 99} aria-label={`Sumar gol a ${label}`}>+</button>
+      </div>
+    </div>
+  );
+}
+
 function ResultSheet({ s, call, flash, onClose }: {
   s: Extract<SheetState, { t: 'result' }>; call: Call; flash: (m: string) => void; onClose: () => void;
 }) {
-  const [a, setA] = useState(s.scoreA ?? 0);
-  const [b, setB] = useState(s.scoreB ?? 0);
+  // Los goles se guardan como texto: '' = sin rellenar (no un 0 forzado que obligue a escribir "01")
+  const [a, setA] = useState(s.scoreA == null ? '' : String(s.scoreA));
+  const [b, setB] = useState(s.scoreB == null ? '' : String(s.scoreB));
   const [mvp, setMvp] = useState(s.mvp ?? '');
+  const [busy, setBusy] = useState(false);
+  const missing = a === '' || b === '';
   const save = async () => {
+    if (missing) return;
+    setBusy(true);
     try {
-      await call(`/api/matches/${s.id}/result`, 'POST', { scoreA: a, scoreB: b, mvpEntryId: mvp || undefined });
+      await call(`/api/matches/${s.id}/result`, 'POST', { scoreA: Number(a), scoreB: Number(b), mvpEntryId: mvp || undefined });
       flash('Resultado guardado ✅');
       s.onSaved();
       onClose();
-    } catch (e) { flash(msg(e)); }
+    } catch (e) { flash(msg(e)); setBusy(false); }
   };
   const list = [...s.roster].sort((x, y) => x.team.localeCompare(y.team) || x.name.localeCompare(y.name));
   return (
     <SheetShell title="Resultado y MVP" onClose={onClose}>
       <div className="note" style={{ marginBottom: 6 }}><span>{s.title}</span></div>
-      <div className="two">
-        <div><label htmlFor="r-a" style={{ color: 'var(--grass)' }}>Equipo A</label><input id="r-a" type="number" inputMode="numeric" min={0} max={99} value={a} onChange={(e) => setA(Number(e.target.value))} /></div>
-        <div><label htmlFor="r-b" style={{ color: 'var(--sky)' }}>Equipo B</label><input id="r-b" type="number" inputMode="numeric" min={0} max={99} value={b} onChange={(e) => setB(Number(e.target.value))} /></div>
+      <div className="score-grid">
+        <ScoreInput id="r-a" label="Equipo A" color="var(--grass)" value={a} onChange={setA} />
+        <span className="score-sep">–</span>
+        <ScoreInput id="r-b" label="Equipo B" color="var(--sky)" value={b} onChange={setB} />
       </div>
-      <label htmlFor="r-mvp" style={{ marginTop: 6 }}>MVP del partido</label>
-      <select id="r-mvp" value={mvp} onChange={(e) => setMvp(e.target.value)}>
-        <option value="">Sin MVP</option>
-        {list.map((r) => <option key={r.entryId} value={r.entryId}>{r.name} (Equipo {r.team})</option>)}
-      </select>
-      <div className="sheet-actions"><button className="btn primary" onClick={save}>Guardar</button></div>
+      {missing && <div className="errtxt">Falta el marcador de {a === '' && b === '' ? 'los dos equipos' : a === '' ? 'el Equipo A' : 'el Equipo B'}.</div>}
+      <div className="lbl" style={{ marginTop: 6 }}>MVP del partido</div>
+      <Picker id="r-mvp" value={mvp} onChange={setMvp} title="MVP del partido" subtitle="El mejor jugador del partido"
+        options={[
+          { value: '', label: 'Sin MVP' },
+          ...list.map((r) => ({ value: r.entryId, label: r.name, sub: `Equipo ${r.team}${r.isGuest ? ' · invitado' : ''}`, icon: <Av name={r.name} url={r.photo} /> })),
+        ]} />
+      <div className="sheet-actions"><button className="btn primary" disabled={missing || busy} onClick={save}>{busy ? 'Guardando…' : 'Guardar'}</button></div>
     </SheetShell>
   );
 }
@@ -1413,10 +1647,9 @@ function ExistingSheet({ groupId, call, flash, onClose, onDone }: {
       ) : (
         <>
           <label htmlFor="e-sel">Jugador</label>
-          <select id="e-sel" value={pid} onChange={(e) => setPid(e.target.value)}>
-            <option value="">Elige un jugador…</option>
-            {all.map((p) => <option key={p.id} value={p.id}>{p.name} · {p.fromGroups.join(', ')}</option>)}
-          </select>
+          <Picker id="e-sel" value={pid} onChange={setPid} title="Jugador de otro grupo" subtitle="Solo jugadores activos de tus otros grupos"
+            placeholder="Elige un jugador…"
+            options={all.map((p) => ({ value: p.id, label: p.name, sub: p.fromGroups.join(' · '), icon: <Av name={p.name} /> }))} />
           <div className="lbl" style={{ marginTop: 6 }}>Valoración en este grupo</div>
           <div className="starbox"><Stars v={stars} size={34} onPick={(v) => setStars(Math.max(1, v))} /><b className="big">{f1(stars)}</b></div>
           <div className="sheet-actions"><button className="btn primary" disabled={!pid} onClick={save}>Añadir al grupo</button></div>
@@ -1426,11 +1659,14 @@ function ExistingSheet({ groupId, call, flash, onClose, onDone }: {
   );
 }
 
-function ProfileSheet({ me, call, flash, onClose, onSaved, onLogout }: {
-  me: Me; call: Call; flash: (m: string) => void; onClose: () => void; onSaved: (m: Me) => void; onLogout: () => void;
+function ProfileSheet({ me, call, flash, onClose, onSaved, onUpdate, onLogout }: {
+  me: Me; call: Call; flash: (m: string) => void; onClose: () => void; onSaved: (m: Me) => void;
+  onUpdate: (m: Me) => void; onLogout: () => void;
 }) {
   const [s, setS] = useState({ name: me.name, nick: me.nick ?? '', lastName: me.lastName ?? '', pos: me.pos, level: me.level });
   const [busy, setBusy] = useState(false);
+  const [authId, setAuthId] = useState<string | null>(null); // carpeta de su foto: users/<id de la cuenta>
+  useEffect(() => { sb().auth.getSession().then(({ data }) => setAuthId(data.session?.user.id ?? null)); }, []);
   const preview = s.nick.trim() ? `${s.name.trim()} '${s.nick.trim()}'` : s.lastName.trim() ? `${s.name.trim()} ${s.lastName.trim().charAt(0).toUpperCase()}.` : '';
   const save = async () => {
     if (!s.name.trim()) { flash('Escribe tu nombre'); return; }
@@ -1444,6 +1680,8 @@ function ProfileSheet({ me, call, flash, onClose, onSaved, onLogout }: {
   };
   return (
     <SheetShell title="Mi perfil" onClose={onClose}>
+      <ImageUploader kind="user" name={me.displayName ?? me.name} current={me.photoUrl} folder={authId ? `users/${authId}` : null} flash={flash}
+        onSave={async (url) => onUpdate(await call<Me>('/api/me', 'PATCH', { photoUrl: url }))} />
       <div className="note" style={{ marginBottom: 6 }}><Icon n="user" /><span>{me.email}</span></div>
       <label htmlFor="m-name">Nombre</label>
       <input id="m-name" value={s.name} maxLength={60} onChange={(e) => setS({ ...s, name: e.target.value })} />
@@ -1462,7 +1700,7 @@ function ProfileSheet({ me, call, flash, onClose, onSaved, onLogout }: {
       </div>
       <div className="lbl" style={{ marginTop: 6 }}>Tu nivel<span className="lockt">el admin de cada grupo puede ajustarlo</span></div>
       <div className="starbox"><Stars v={s.level} size={34} onPick={(v) => setS({ ...s, level: Math.max(1, v) })} /><b className="big">{f1(s.level)}</b></div>
-      <PushSettings me={me} call={call} flash={flash} onSaved={onSaved} />
+      <PushSettings me={me} call={call} flash={flash} onSaved={onUpdate} />
       <div className="sheet-actions">
         <button className="btn ghost" onClick={onLogout}>Cerrar sesión</button>
         <button className="btn primary" onClick={save} disabled={busy}>Guardar</button>
@@ -1502,57 +1740,52 @@ function DeleteGroupSheet({ group, call, flash, onClose, onDone }: {
 }
 
 /** Enlace de invitación + acciones del grupo (Plantilla). */
-function GroupAdmin({ groupId, call, flash, version, onDelete, onLeave }: {
+/** Escudo del grupo, invitación compacta (copiar / compartir) y salir o eliminar. */
+function GroupAdmin({ groupId, call, flash, version, onDelete, onLeave, onChanged }: {
   groupId: string; call: Call; flash: (m: string) => void; version: number; onDelete: () => void; onLeave: () => void;
+  onChanged: () => void;
 }) {
   const [info, setInfo] = useState<GroupInfo | null>(null);
-  const [days, setDays] = useState('7');
+  const [copied, setCopied] = useState(false);
   const load = useCallback(() => { call<GroupInfo>(`/api/groups/${groupId}`).then(setInfo).catch((e) => flash(msg(e))); }, [call, groupId, flash]);
   useEffect(() => { setInfo(null); load(); }, [load, version]);
   if (!info) return null;
   const inv = info.invite;
-  const expired = !!inv?.expiresAt && new Date(inv.expiresAt).getTime() < Date.now();
+  const manage = isManager(info.role);
+  const shareText = (url: string) => `¡Únete a nuestro grupo de fútbol en Football Star! ${url}`;
 
-  const share = async () => {
+  const copy = async () => {
     if (!inv) return;
     try {
-      if (navigator.share && /Mobi|Android|iPhone/i.test(navigator.userAgent)) {
-        await navigator.share({ title: info.name, text: `Únete a “${info.name}” en Equilibrio FC`, url: inv.url });
-      } else {
-        await navigator.clipboard.writeText(inv.url);
-        flash('Enlace copiado');
-      }
-    } catch { /* cancelado */ }
+      await navigator.clipboard.writeText(inv.url);
+      setCopied(true);
+      setTimeout(() => setCopied(false), 2000);
+    } catch { flash('No se pudo copiar: mantén pulsado el enlace para copiarlo'); }
   };
-  const regenerate = async () => {
-    if (!confirm('El enlace actual dejará de funcionar. ¿Crear uno nuevo?')) return;
-    try {
-      await call(`/api/groups/${groupId}/invite`, 'POST', { expiresInDays: days === 'never' ? null : Number(days) });
-      flash('Nuevo enlace creado');
-      load();
-    } catch (e) { flash(msg(e)); }
+  const share = async () => {
+    if (!inv) return;
+    if (navigator.share) {
+      try { await navigator.share({ title: info.name, text: shareText(inv.url) }); } catch { /* cancelado */ }
+    } else {
+      window.open(`https://wa.me/?text=${encodeURIComponent(shareText(inv.url))}`, '_blank', 'noopener');
+    }
   };
 
   return (
     <>
-      {inv && (
+      {manage && (
         <div className="card form">
-          <div className="lbl"><Icon n="link" /> Enlace de invitación</div>
-          <input readOnly value={inv.url} onFocus={(e) => e.target.select()} style={{ fontSize: 12.5 }} />
-          <span className={expired ? 'warnbox' : 'note'}>
-            {inv.expiresAt ? `${expired ? 'Caducó' : 'Caduca'} el ${cap1(fmtD(inv.expiresAt, { weekday: 'long', day: 'numeric', month: 'long' }))}` : 'No caduca'}
-            {' · '}quien lo abra se registra y entra al grupo.
-          </span>
-          <div className="two">
-            <button className="btn primary sm" disabled={expired} onClick={share}>Compartir</button>
-            <button className="btn sm" onClick={regenerate}>Nuevo enlace</button>
-          </div>
-          <select value={days} onChange={(e) => setDays(e.target.value)} aria-label="Caducidad del nuevo enlace" style={{ height: 38, fontSize: 13 }}>
-            <option value="1">El nuevo enlace caduca en 1 día</option>
-            <option value="7">El nuevo enlace caduca en 7 días</option>
-            <option value="30">El nuevo enlace caduca en 30 días</option>
-            <option value="never">El nuevo enlace no caduca</option>
-          </select>
+          <div className="lbl">Escudo del grupo</div>
+          <ImageUploader kind="group" name={info.name} current={info.iconUrl} folder={`groups/${groupId}`} flash={flash}
+            onSave={async (url) => { await call(`/api/groups/${groupId}`, 'PATCH', { iconUrl: url }); load(); onChanged(); }} />
+        </div>
+      )}
+      {inv && (
+        <div className="invbar">
+          <span className="invbar-ico"><Icon n="link" /></span>
+          <span className="invbar-url" title={inv.url}>{inv.url.replace(/^https?:\/\//, '')}</span>
+          <button className={`btn sm${copied ? ' copied' : ''}`} onClick={copy}>{copied ? <><Icon n="check" /> ¡Copiado!</> : 'Copiar'}</button>
+          <button className="iconbtn" onClick={share} aria-label="Compartir por WhatsApp u otra app"><Icon n="share" /></button>
         </div>
       )}
       {info.role === 'owner'
@@ -1577,14 +1810,15 @@ function TextSheet({ text, onClose }: { text: string; onClose: () => void }) {
 /* ================================== Chat ================================== */
 const whenLabel = (iso: string) => `${cap1(fmtD(iso, { weekday: 'long', day: 'numeric', month: 'short' }))} · ${hhmm(iso)}`;
 
-function rowToMsg(r: Record<string, unknown>, names: Map<string, { name: string; nick: string | null }>): ChatMsg {
+type NameInfo = { name: string; nick: string | null; photo: string | null };
+function rowToMsg(r: Record<string, unknown>, names: Map<string, NameInfo>): ChatMsg {
   const pid = (r.player_id as string | null) ?? null;
   const who = pid ? names.get(pid) : undefined;
   return {
     id: String(r.id), groupId: String(r.group_id), playerId: pid, type: r.type as ChatMsg['type'],
     content: String(r.content ?? ''), pollId: (r.poll_id as string | null) ?? null,
     metadata: (r.metadata as ChatMsg['metadata']) ?? {}, createdAt: String(r.created_at),
-    authorName: who?.name ?? null, authorNick: who?.nick ?? null,
+    authorName: who?.name ?? null, authorNick: who?.nick ?? null, authorPhoto: who?.photo ?? null,
   };
 }
 
@@ -1597,7 +1831,10 @@ function PollCard({ poll, meId, manage, onVote, onCreateMatch, onOpenMatch, onTo
   const [guestOpen, setGuestOpen] = useState(false);
   const enough = poll.confirmed.length >= MIN_PLAYERS;
   const closed = poll.status === 'closed';
-  const fill = poll.maxSlots ? Math.min(100, (poll.counts.yes / poll.maxSlots) * 100) : 0;
+  // Progreso hacia el mínimo de la modalidad (10 / 14 / 22): se pone verde al alcanzarlo
+  const quorum = poll.quorum || QUORUM_N[poll.format ?? '5v5'] || MIN_PLAYERS;
+  const reached = poll.counts.yes >= quorum;
+  const fill = Math.min(100, (poll.counts.yes / quorum) * 100);
   const waitPos = poll.waitlist.findIndex((u) => u.id === meId);
   const run = async (fn: () => Promise<void>) => { setBusy(true); try { await fn(); } finally { setBusy(false); } };
   const OPTS: [Choice, string, number][] = [
@@ -1627,12 +1864,16 @@ function PollCard({ poll, meId, manage, onVote, onCreateMatch, onOpenMatch, onTo
       <div className="eyebrow">Encuesta de asistencia</div>
       <b className="pq">{poll.question}</b>
       <span className="note"><Icon n="matches" /><span>{whenLabel(poll.matchAt)}{poll.format && MOD[poll.format] ? ` · ${MOD[poll.format].label}` : ''}</span></span>
+      {poll.location && <a className="maps" target="_blank" rel="noopener noreferrer" href={mapsUrl(poll.location)}><Icon n="pin" /> {poll.location}</a>}
+      {poll.notes && <span className="mnotes">📝 {poll.notes}</span>}
       <div className="pcount">
-        <b>{poll.maxSlots ? `${poll.counts.yes}/${poll.maxSlots}` : poll.counts.yes}</b>
-        <span>{poll.maxSlots ? 'plazas ocupadas' : 'se apuntan'}{poll.counts.waitlist > 0 ? ` · ${poll.counts.waitlist} en espera` : ''}</span>
-        {closed && <span className="chip">Cerrada</span>}
+        <b>{poll.counts.yes} / {quorum}</b>
+        <span>jugadores{poll.maxSlots ? ` · cupo ${poll.maxSlots}` : ''}{poll.counts.waitlist > 0 ? ` · ${poll.counts.waitlist} en espera` : ''}</span>
+        {closed ? <span className="chip">Cerrada</span> : reached && <span className="chip ok">¡Completo!</span>}
       </div>
-      {poll.maxSlots && <div className="wbar"><i style={{ width: fill + '%', background: fill >= 100 ? 'var(--warn)' : undefined }} /></div>}
+      <div className={`qbar${reached ? ' done' : ''}`} role="progressbar" aria-valuemin={0} aria-valuemax={quorum} aria-valuenow={poll.counts.yes}>
+        <i style={{ width: fill + '%' }} />
+      </div>
       <div className="pvotes">
         {OPTS.map(([c, label, n]) => (
           <button key={c} className={`pvote${poll.myVote === c ? ' on ' + c : ''}`} disabled={closed || busy}
@@ -1673,7 +1914,9 @@ function PollSheet({ groupId, call, flash, onClose, onCreated }: {
   const [minWhen, setMinWhen] = useState(minDT);
   const [mod, setMod] = useState('7v7');
   const [limit, setLimit] = useState(true);
-  const [slots, setSlots] = useState(14);
+  const [slots, setSlots] = useState(QUORUM_N['7v7']);
+  const [venue, setVenue] = useState('');
+  const [notes, setNotes] = useState('');
   const [q, setQ] = useState('');
   const [touched, setTouched] = useState(false);
   const [busy, setBusy] = useState(false);
@@ -1687,6 +1930,7 @@ function PollSheet({ groupId, call, flash, onClose, onCreated }: {
     try {
       const m = await call<ChatMsg>(`/api/groups/${groupId}/polls`, 'POST', {
         question: q.trim(), matchAt: new Date(when).toISOString(), format: mod, maxSlots: limit ? Math.max(1, slots) : null,
+        location: venue.trim() || null, notes: notes.trim() || null,
       });
       onCreated(m);
       onClose();
@@ -1697,12 +1941,17 @@ function PollSheet({ groupId, call, flash, onClose, onCreated }: {
       <label htmlFor="p-when">Fecha y hora del partido</label>
       <input id="p-when" type="datetime-local" value={when} min={minWhen} onFocus={() => setMinWhen(minDT())} onChange={(e) => setWhen(e.target.value)} />
       {!isFutureDT(when) && <div className="warnbox"><Icon n="warn" /><span>Elige una fecha y hora futuras.</span></div>}
-      <div className="lbl" style={{ marginTop: 6 }}>Modalidad</div>
+      <div className="lbl" style={{ marginTop: 6 }}>Modalidad del encuentro</div>
       <div className="seg">
         {Object.keys(MOD).map((k) => (
-          <button key={k} className={mod === k ? 'on' : ''} onClick={() => { setMod(k); setSlots(MOD[k].n * 2); }}>{MOD[k].short}</button>
+          <button key={k} className={mod === k ? 'on' : ''} onClick={() => { setMod(k); setSlots(QUORUM_N[k]); }}>{SEG_LABEL[k]}</button>
         ))}
       </div>
+      <div className="quorumhint"><span>{MOD[mod].label} · mínimo {QUORUM_N[mod]} jugadores</span><b>Cupo sugerido: {QUORUM_N[mod]}</b></div>
+      <label htmlFor="p-venue" style={{ marginTop: 6 }}>Lugar / campo <span className="lockt">opcional</span></label>
+      <input id="p-venue" value={venue} maxLength={200} onChange={(e) => setVenue(e.target.value)} placeholder="Polideportivo municipal, pista 3" autoComplete="off" />
+      <label htmlFor="p-notes" style={{ marginTop: 6 }}>Notas / precio <span className="lockt">opcional</span></label>
+      <input id="p-notes" value={notes} maxLength={500} onChange={(e) => setNotes(e.target.value)} placeholder="4 € por persona · traed peto blanco y oscuro" autoComplete="off" />
       <label htmlFor="p-q" style={{ marginTop: 6 }}>Pregunta</label>
       <input id="p-q" value={q} maxLength={200} onChange={(e) => { setTouched(true); setQ(e.target.value); }} />
       <div className="lbl" style={{ marginTop: 6 }}>Cupo</div>
@@ -1717,6 +1966,7 @@ function PollSheet({ groupId, call, flash, onClose, onCreated }: {
       </div>
       <div className="note" style={{ marginTop: 6 }}><span>Al llenarse el cupo, los siguientes que se apunten pasan a lista de espera automáticamente.</span></div>
       {limit && slots > 0 && slots < MIN_PLAYERS && <div className="errtxt">Con {slots} plaza{slots === 1 ? '' : 's'} no se podrá crear el partido desde la encuesta (mínimo {MIN_PLAYERS} jugadores).</div>}
+      <div className="note"><span>Formato, lugar, notas, fecha y confirmados pasarán solos al partido con “Crear Partido con Confirmados”.</span></div>
       <div className="sheet-actions"><button className="btn primary" disabled={!ok || busy} onClick={save}>Publicar en el chat</button></div>
     </SheetShell>
   );
@@ -1737,7 +1987,7 @@ function ChatRoom({ groups, groupId, setGroupId, meId, call, flash, onOpenMatch,
   const scrollRef = useRef<HTMLElement>(null);
   const stick = useRef(true);
   const keepFrom = useRef<number | null>(null);
-  const names = useRef(new Map<string, { name: string; nick: string | null }>());
+  const names = useRef(new Map<string, NameInfo>());
   const timers = useRef(new Map<string, ReturnType<typeof setTimeout>>());
   const manage = isManager(groups.find((g) => g.id === groupId)?.role);
 
@@ -1758,9 +2008,9 @@ function ChatRoom({ groups, groupId, setGroupId, meId, call, flash, onOpenMatch,
   }, [call, setPoll]);
   const loadNames = useCallback(async () => {
     const l = await call<Player[]>(`/api/groups/${groupId}/players`).catch(() => [] as Player[]);
-    l.forEach((p) => names.current.set(p.id, { name: p.displayName ?? p.name, nick: p.nick }));
+    l.forEach((p) => names.current.set(p.id, { name: p.displayName ?? p.name, nick: p.nick, photo: p.photoUrl }));
     setMsgs((prev) => prev.map((m) => (m.playerId && !m.authorName && names.current.has(m.playerId)
-      ? { ...m, authorName: names.current.get(m.playerId)!.name, authorNick: names.current.get(m.playerId)!.nick } : m)));
+      ? { ...m, authorName: names.current.get(m.playerId)!.name, authorNick: names.current.get(m.playerId)!.nick, authorPhoto: names.current.get(m.playerId)!.photo } : m)));
   }, [call, groupId]);
 
   // Leído: al abrir el chat y con cada mensaje nuevo mientras está abierto (badge a 0)
@@ -1781,7 +2031,7 @@ function ChatRoom({ groups, groupId, setGroupId, meId, call, flash, onOpenMatch,
     setLoading(true);
     setMsgs([]);
     stick.current = true;
-    names.current = new Map();
+    names.current = new Map<string, NameInfo>();
     loadNames();
     call<{ messages: ChatMsg[]; hasMore: boolean }>(`/api/groups/${groupId}/messages?limit=50`)
       .then((d) => { if (!off) { setMsgs(d.messages); setHasMore(d.hasMore); } })
@@ -1879,7 +2129,7 @@ function ChatRoom({ groups, groupId, setGroupId, meId, call, flash, onOpenMatch,
       }}>
         {hasMore && <button className="btn ghost sm" style={{ alignSelf: 'center' }} onClick={older}>Mensajes anteriores</button>}
         {loading ? <div className="empty">Cargando…</div> : msgs.length === 0 && (
-          <div className="empty">Aún no hay mensajes. Abre la convocatoria con una encuesta 📊</div>
+          <div className="empty">{manage ? 'Aún no hay mensajes. Abre la convocatoria con una encuesta 📊' : 'Aún no hay mensajes. ¡Saluda al grupo!'}</div>
         )}
         {msgs.map((m, i) => {
           const prev = msgs[i - 1];
@@ -1901,7 +2151,7 @@ function ChatRoom({ groups, groupId, setGroupId, meId, call, flash, onOpenMatch,
           return (
             <div key={m.id} className={`msgwrap${mine ? ' mine' : ''}`}>
               {day}
-              {showName && <div className="who">{m.authorNick || m.authorName || 'Jugador'}</div>}
+              {showName && <div className="who"><Av name={m.authorName || 'Jugador'} url={m.authorPhoto} size={20} />{m.authorName || 'Jugador'}</div>}
               {m.type === 'poll' ? (
                 m.poll ? (
                   <PollCard poll={m.poll} meId={meId} manage={manage}
@@ -1914,7 +2164,7 @@ function ChatRoom({ groups, groupId, setGroupId, meId, call, flash, onOpenMatch,
                       const p = m.poll as Poll;
                       // Confirmados (sin lista de espera): miembros por id e invitados externos por nombre
                       onCreateMatch({
-                        groupId, when: p.matchAt, pollId: p.id, format: p.format,
+                        groupId, when: p.matchAt, pollId: p.id, format: p.format, location: p.location, notes: p.notes,
                         playerIds: p.confirmed.filter((u) => !u.guest).map((u) => u.id),
                         guests: p.confirmed.filter((u) => u.guest).map((u) => ({ name: u.name, stars: u.stars ?? 3, pos: u.pos })),
                       });
@@ -1928,7 +2178,7 @@ function ChatRoom({ groups, groupId, setGroupId, meId, call, flash, onOpenMatch,
         })}
       </main>
       <div className="chatbar">
-        <button className="iconbtn" onClick={() => setPollOpen(true)} aria-label="Nueva encuesta de asistencia" title="Nueva encuesta"><Icon n="poll" /></button>
+        {manage && <button className="iconbtn" onClick={() => setPollOpen(true)} aria-label="Nueva encuesta de asistencia" title="Nueva encuesta"><Icon n="poll" /></button>}
         <textarea value={text} rows={1} maxLength={2000} placeholder="Escribe un mensaje…" onChange={(e) => setText(e.target.value)}
           onKeyDown={(e) => { if (e.key === 'Enter' && !e.shiftKey) { e.preventDefault(); send(); } }} />
         <button className="iconbtn send" onClick={send} disabled={!text.trim() || sending} aria-label="Enviar"><Icon n="send" /></button>
@@ -1940,10 +2190,10 @@ function ChatRoom({ groups, groupId, setGroupId, meId, call, flash, onOpenMatch,
 }
 
 /* ================================ Pestañas ================================ */
-function SquadTab({ groups, groupId, setGroupId, call, flash, version, openPlayer, openGroup, openExisting, onDeleteGroup, onLeaveGroup }: {
+function SquadTab({ groups, groupId, setGroupId, call, flash, version, openPlayer, openGroup, openExisting, onDeleteGroup, onLeaveGroup, onGroupsChanged }: {
   groups: Group[]; groupId: string; setGroupId: (id: string) => void; call: Call; flash: (m: string) => void; version: number;
   openPlayer: (p: PlayerInit, accounts: Player[]) => void; openGroup: () => void; openExisting: () => void;
-  onDeleteGroup: () => void; onLeaveGroup: () => void;
+  onDeleteGroup: () => void; onLeaveGroup: () => void; onGroupsChanged: () => void;
 }) {
   const role = groups.find((g) => g.id === groupId)?.role;
   const manage = isManager(role);
@@ -1962,10 +2212,8 @@ function SquadTab({ groups, groupId, setGroupId, call, flash, version, openPlaye
 
   return (
     <>
-      <div className="gbar">
-        <GroupSelect groups={groups} value={groupId} onChange={setGroupId} />
-        <button className="btn sm" style={{ height: 46 }} onClick={openGroup}><Icon n="plus" /> Grupo</button>
-      </div>
+      <GroupSelect groups={groups} value={groupId} onChange={setGroupId} onCreate={openGroup} />
+      {groups.length === 0 && <button className="btn primary block" onClick={openGroup}><Icon n="plus" /> Crear grupo</button>}
       {groups.length === 0 ? (
         <div className="empty">Crea tu primer grupo, por ejemplo “Fútbol Jueves”, y añade a sus jugadores.</div>
       ) : (
@@ -1983,7 +2231,7 @@ function SquadTab({ groups, groupId, setGroupId, call, flash, version, openPlaye
           ) : list.map((p) => {
             const inner = (
               <>
-                <Av name={p.displayName ?? p.name} />
+                <Av name={p.displayName ?? p.name} url={p.photoUrl} />
                 <span className="pname">
                   <b>{p.displayName ?? p.name}</b>
                   <small>{[POS[p.pos].label, p.role !== 'member' ? ROLE_LABEL[p.role] : '', p.hasAccount ? '' : 'sin cuenta'].filter(Boolean).join(' · ')}</small>
@@ -2000,7 +2248,7 @@ function SquadTab({ groups, groupId, setGroupId, call, flash, version, openPlaye
             ) : <div key={p.id} className="prow">{inner}</div>;
           })}
           {manage && <button className="btn block" onClick={openExisting}>Añadir jugador de otro grupo</button>}
-          {groupId && <GroupAdmin groupId={groupId} call={call} flash={flash} version={version} onDelete={onDeleteGroup} onLeave={onLeaveGroup} />}
+          {groupId && <GroupAdmin groupId={groupId} call={call} flash={flash} version={version} onDelete={onDeleteGroup} onLeave={onLeaveGroup} onChanged={onGroupsChanged} />}
         </>
       )}
     </>
@@ -2306,7 +2554,11 @@ function Main({ onLogout, startGroupId }: { onLogout: () => void; startGroupId?:
           <button className="btn primary sm" onClick={() => setSheet({ t: 'player', init: { name: '', nick: '', lastName: '', pos: 'DEF', stars: 3 }, accounts: [] })}><Icon n="plus" /> Jugador</button>
         )}
         {bell}
-        {tab === 'matches' && <button className="iconbtn" onClick={() => setSheet({ t: 'profile' })} aria-label="Mi perfil"><Icon n="user" /></button>}
+        {tab === 'matches' && (
+          <button className="iconbtn avbtn" onClick={() => setSheet({ t: 'profile' })} aria-label="Mi perfil">
+            {me?.photoUrl ? <Av name={me.displayName ?? me.name} url={me.photoUrl} size={36} /> : <Icon n="user" />}
+          </button>
+        )}
       </span>
     );
     screen = (
@@ -2365,7 +2617,7 @@ function Main({ onLogout, startGroupId }: { onLogout: () => void; startGroupId?:
               <SquadTab groups={groups} groupId={groupId} setGroupId={setGroupId} call={call} flash={flash} version={version}
                 openPlayer={(init, accounts) => setSheet({ t: 'player', init, accounts })} openGroup={() => setSheet({ t: 'group' })}
                 openExisting={() => setSheet({ t: 'existing' })}
-                onDeleteGroup={() => setSheet({ t: 'deleteGroup' })} onLeaveGroup={leaveGroup} />
+                onDeleteGroup={() => setSheet({ t: 'deleteGroup' })} onLeaveGroup={leaveGroup} onGroupsChanged={refresh} />
             )}
             {tab === 'stats' && (
               <StatsTab groups={groups} groupId={groupId} setGroupId={setGroupId} call={call} flash={flash} version={version} onAdjusted={bump} />
@@ -2402,7 +2654,7 @@ function Main({ onLogout, startGroupId }: { onLogout: () => void; startGroupId?:
         <ExistingSheet groupId={groupId} call={call} flash={flash} onClose={() => setSheet(null)} onDone={() => { setSheet(null); bump(); }} />
       )}
       {sheet && sheet.t === 'profile' && me && (
-        <ProfileSheet me={me} call={call} flash={flash} onClose={() => setSheet(null)} onLogout={onLogout}
+        <ProfileSheet me={me} call={call} flash={flash} onClose={() => setSheet(null)} onLogout={onLogout} onUpdate={setMe}
           onSaved={(m) => { setMe(m); setSheet(null); bump(); }} />
       )}
       {sheet && sheet.t === 'deleteGroup' && current && (

@@ -2,7 +2,7 @@ import { tx } from '@/lib/db';
 import { handle, readBody, HttpError } from '@/lib/http';
 import { requireUser } from '@/lib/auth';
 import { assertGroup, assertUuid } from '@/lib/queries';
-import { loadPoll } from '@/lib/polls';
+import { checkQuorum } from '@/lib/polls';
 
 // Votar: { choice: 'yes' (Me apunto) | 'no' (No puedo) | 'maybe' (Duda) }
 export const POST = handle(async (req, { params }) => {
@@ -21,7 +21,7 @@ export const POST = handle(async (req, { params }) => {
        ON CONFLICT (poll_id, player_id) DO UPDATE SET choice = EXCLUDED.choice`,
       [pollId, p.rows[0].group_id, me.playerId, choice]
     );
-    return loadPoll(c, pollId, me.playerId);
+    return checkQuorum(c, pollId, me.playerId); // estado + aviso de "ya somos 10/14/22" si toca
   });
   return Response.json(poll);
 });

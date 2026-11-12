@@ -5,8 +5,9 @@ import { assertGroup, startersFor } from '@/lib/queries';
 import { loadPoll, MSG_SELECT } from '@/lib/polls';
 import { notify } from '@/lib/notify';
 
-// Crear encuesta de asistencia en el chat (cualquier miembro).
-// Body: { question, matchAt (ISO futuro), maxSlots?: 1..60 | null, format?: '5v5' | '7v7' | '11v11' }
+// Crear encuesta de asistencia en el chat (SOLO admin y co-admins del grupo; 403 para el resto).
+// Body: { question, matchAt (ISO futuro), maxSlots?: 1..60 | null, format?: '5v5' | '7v7' | '11v11',
+//         location?, notes? }  -> formato, lugar y notas pasan solos al partido creado desde la encuesta
 // (el cupo admite cualquier número desde 1; el mínimo de 10 jugadores se exige al crear el partido)
 export const POST = handle(async (req, { params }) => {
   const me = await requireUser(req);
@@ -22,14 +23,17 @@ export const POST = handle(async (req, { params }) => {
   if (maxSlots !== null && (!Number.isInteger(maxSlots) || maxSlots < 1 || maxSlots > 60)) {
     throw new HttpError(400, 'El cupo debe estar entre 1 y 60');
   }
-  const format = b.format ? (startersFor(b.format), b.format as string) : null;
+  const format = b.format ? (startersFor(b.format), b.format as string) : '5v5';
+  const text = (v: unknown, max: number) => (typeof v === 'string' && v.trim() ? v.trim().slice(0, max) : null);
+  const location = text(b.location, 200);
+  const notes = text(b.notes, 500);
 
   const out = await tx(async (c) => {
-    const g = await assertGroup(c, me.playerId, groupId);
+    const g = await assertGroup(c, me.playerId, groupId, 'manager');
     const p = await c.query(
-      `INSERT INTO polls (group_id, created_by, question, match_at, max_slots, format)
-       VALUES ($1, $2, $3, $4, $5, $6) RETURNING id`,
-      [groupId, me.playerId, question, when.toISOString(), maxSlots, format]
+      `INSERT INTO polls (group_id, created_by, question, match_at, max_slots, format, location, notes)
+       VALUES ($1, $2, $3, $4, $5, $6, $7, $8) RETURNING id`,
+      [groupId, me.playerId, question, when.toISOString(), maxSlots, format, location, notes]
     );
     const pollId: string = p.rows[0].id;
     const m = await c.query(

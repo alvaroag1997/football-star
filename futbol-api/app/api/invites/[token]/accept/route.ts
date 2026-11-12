@@ -2,6 +2,7 @@ import { tx } from '@/lib/db';
 import { handle, HttpError } from '@/lib/http';
 import { requireUser } from '@/lib/auth';
 import { assertUniqueNames, assertUuid, systemMessage } from '@/lib/queries';
+import { notify } from '@/lib/notify';
 
 // Unirse a un grupo con el enlace de invitación (requiere sesión).
 export const POST = handle(async (req, { params }) => {
@@ -36,6 +37,10 @@ export const POST = handle(async (req, { params }) => {
       throw new HttpError(409, `${e.message} Cámbialo en tu perfil y vuelve a abrir el enlace.`);
     });
     await systemMessage(c, group.id, `👋 ${me.name} se ha unido al grupo`, { event: 'member_joined', playerId: me.playerId });
+    await notify(c, {
+      groupId: group.id, type: 'member_joined', recipients: 'members', exclude: me.playerId,
+      title: `👋 Nuevo en ${group.name}`, body: `${me.name} se ha unido al grupo ${group.name}`,
+    });
     return { groupId: group.id, alreadyMember: false };
   });
   return Response.json(out, { status: out.alreadyMember ? 200 : 201 });

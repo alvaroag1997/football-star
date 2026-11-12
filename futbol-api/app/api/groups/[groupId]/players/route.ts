@@ -1,7 +1,8 @@
 import { pool, tx } from '@/lib/db';
 import { handle, readBody, HttpError } from '@/lib/http';
 import { requireUser } from '@/lib/auth';
-import { assertGroup, assertUniqueNames, assertUuid, isManager, parsePos } from '@/lib/queries';
+import { assertGroup, assertUniqueNames, assertUuid, isManager, parsePos, systemMessage } from '@/lib/queries';
+import { notify } from '@/lib/notify';
 
 // Jugadores activos de UN grupo (con su rol). Las estrellas solo las ven admin y co-admins.
 export const GET = handle(async (req, { params }) => {
@@ -31,7 +32,7 @@ export const POST = handle(async (req, { params }) => {
   if (!Number.isFinite(stars) || stars < 0 || stars > 10) throw new HttpError(400, 'stars debe estar entre 0 y 10');
 
   const out = await tx(async (c) => {
-    await assertGroup(c, me.playerId, groupId, 'manager');
+    const g = await assertGroup(c, me.playerId, groupId, 'manager');
     let playerId: string;
     if (b.playerId) {
       playerId = assertUuid(b.playerId, 'playerId');
@@ -57,6 +58,8 @@ export const POST = handle(async (req, { params }) => {
       );
       playerId = r.rows[0].id;
     }
+    const prev = await c.query('SELECT is_active FROM group_players WHERE group_id = $1 AND player_id = $2', [groupId, playerId]);
+    const wasActive = !!prev.rows[0]?.is_active;
     await c.query(
       `INSERT INTO group_players (group_id, player_id, stars) VALUES ($1, $2, $3)
        ON CONFLICT (group_id, player_id)
@@ -64,6 +67,15 @@ export const POST = handle(async (req, { params }) => {
       [groupId, playerId, stars]
     );
     await assertUniqueNames(c, playerId, groupId); // nada de dos "Carlos M." en el mismo grupo
+    // Aviso de nuevo miembro (salvo que ya estuviera activo y solo se le cambien las estrellas)
+    if (!wasActive) {
+      const who = (await c.query('SELECT display_name FROM players WHERE id = $1', [playerId])).rows[0].display_name;
+      await systemMessage(c, groupId, `👋 ${who} se ha unido al grupo`, { event: 'member_joined', playerId });
+      await notify(c, {
+        groupId, type: 'member_joined', recipients: 'members', exclude: me.playerId,
+        title: `👋 Nuevo en ${g.name}`, body: `${who} se ha unido al grupo ${g.name}`,
+      });
+    }
     return { id: playerId, groupId, stars };
   });
   return Response.json(out, { status: 201 });

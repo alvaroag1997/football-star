@@ -1,7 +1,7 @@
 import { pool, tx } from '@/lib/db';
 import { handle, readBody, HttpError } from '@/lib/http';
 import { requireUser } from '@/lib/auth';
-import { assertUniqueNames, parsePos } from '@/lib/queries';
+import { assertUniqueNames, parsePos, storageUrl } from '@/lib/queries';
 
 const COLS = `id, name, nick, last_name AS "lastName", display_name AS "displayName", pos,
               level::float8 AS level, email, photo_url AS "photoUrl",
@@ -23,7 +23,7 @@ const optText = (v: unknown, what: string) => {
   return t || null;
 };
 
-// Body: { name?, nick?, lastName?, pos?, level? (1-5), notifyChat?, notifyPolls?, notifyMatches? }
+// Body: { name?, nick?, lastName?, pos?, level? (1-5), notifyChat?, notifyPolls?, notifyMatches?, photoUrl? (Storage o null) }
 // Obligatorio tener apodo O apellido, y el nombre visible no puede repetirse en tus grupos.
 export const PATCH = handle(async (req) => {
   const me = await requireUser(req);
@@ -38,6 +38,7 @@ export const PATCH = handle(async (req) => {
   }
   const nick = optText(b.nick, 'El apodo');
   const flag = (v: unknown) => (typeof v === 'boolean' ? v : null);
+  const photo = b.photoUrl === undefined ? undefined : storageUrl(b.photoUrl, `users/${me.authId}`);
   const lastName = optText(b.lastName, 'El apellido');
 
   const row = await tx(async (c) => {
@@ -50,12 +51,13 @@ export const PATCH = handle(async (req) => {
          level     = COALESCE($8, level),
          notify_chat    = COALESCE($9, notify_chat),
          notify_polls   = COALESCE($10, notify_polls),
-         notify_matches = COALESCE($11, notify_matches)
+         notify_matches = COALESCE($11, notify_matches),
+         photo_url = CASE WHEN $12::boolean THEN $13 ELSE photo_url END
        WHERE id = $1
        RETURNING ${COLS}`,
       [me.playerId, b.name === undefined ? null : b.name.trim(), nick !== undefined, nick ?? null,
        lastName !== undefined, lastName ?? null, b.pos === undefined ? null : parsePos(b.pos), level,
-       flag(b.notifyChat), flag(b.notifyPolls), flag(b.notifyMatches)]
+       flag(b.notifyChat), flag(b.notifyPolls), flag(b.notifyMatches), photo !== undefined, photo ?? null]
     );
     const p = rows[0];
     if (!p.nick && !p.lastName) throw new HttpError(400, 'Pon un apodo o un apellido para que te distingan en el grupo');
