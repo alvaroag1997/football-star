@@ -1,44 +1,57 @@
 import { pool, tx } from '@/lib/db';
 import { handle, readBody, HttpError } from '@/lib/http';
-import { requireAdmin } from '@/lib/auth';
-import { assertGroup, parsePos } from '@/lib/queries';
+import { requireUser } from '@/lib/auth';
+import { assertGroup, assertUuid, isManager, parsePos } from '@/lib/queries';
 
-// Jugadores activos de UN grupo
+// Jugadores activos de UN grupo (con su rol). Las estrellas solo las ven admin y co-admins.
 export const GET = handle(async (req, { params }) => {
-  const adminId = requireAdmin(req);
+  const me = await requireUser(req);
   const { groupId } = await params;
-  await assertGroup(pool, adminId, groupId);
+  const g = await assertGroup(pool, me.playerId, groupId);
   const { rows } = await pool.query(
-    `SELECT p.id, p.name, p.nick, p.pos, p.photo_url AS "photoUrl", gp.stars::float8 AS stars
+    `SELECT p.id, p.name, p.nick, p.pos, p.photo_url AS "photoUrl", gp.stars::float8 AS stars,
+            gp.role, (p.auth_user_id IS NOT NULL) AS "hasAccount"
        FROM group_players gp JOIN players p ON p.id = gp.player_id
       WHERE gp.group_id = $1 AND gp.is_active AND p.is_active
       ORDER BY p.name`,
     [groupId]
   );
-  return Response.json(rows);
+  return Response.json(isManager(g.role) ? rows : rows.map((r) => ({ ...r, stars: 0 })));
 });
 
-// Añade un jugador al grupo. Con "playerId" reutiliza a una persona que ya
-// existe en otro grupo; sin él crea una nueva (name, nick?, pos?).
+// Añade un jugador al grupo (admin o co-admin):
+//  - con "playerId": alguien activo de OTRO de tus grupos (ver GET /api/players?groupId=)
+//  - sin él: crea un jugador manual, sin cuenta (name, nick?, pos?)
 export const POST = handle(async (req, { params }) => {
-  const adminId = requireAdmin(req);
+  const me = await requireUser(req);
   const { groupId } = await params;
   const b = await readBody(req);
   const stars = Number(b.stars);
   if (!Number.isFinite(stars) || stars < 0 || stars > 10) throw new HttpError(400, 'stars debe estar entre 0 y 10');
 
   const out = await tx(async (c) => {
-    await assertGroup(c, adminId, groupId);
-    let playerId: string = b.playerId;
-    if (playerId) {
-      const r = await c.query('SELECT id FROM players WHERE id = $1 AND admin_id = $2 AND is_active', [playerId, adminId]);
-      if (!r.rows.length) throw new HttpError(404, 'Jugador no encontrado');
+    await assertGroup(c, me.playerId, groupId, 'manager');
+    let playerId: string;
+    if (b.playerId) {
+      playerId = assertUuid(b.playerId, 'playerId');
+      // Solo jugadores ACTIVOS que estén activos en algún otro grupo tuyo (nada de huérfanos)
+      const r = await c.query(
+        `SELECT 1
+           FROM group_players mine
+           JOIN groups g ON g.id = mine.group_id AND g.is_active
+           JOIN group_players gp ON gp.group_id = g.id AND gp.is_active AND gp.player_id = $2
+           JOIN players p ON p.id = gp.player_id AND p.is_active
+          WHERE mine.player_id = $1 AND mine.is_active
+          LIMIT 1`,
+        [me.playerId, playerId]
+      );
+      if (!r.rowCount) throw new HttpError(404, 'Ese jugador no está en ninguno de tus otros grupos');
     } else {
       if (typeof b.name !== 'string' || !b.name.trim()) throw new HttpError(400, 'name es obligatorio');
       const nick = typeof b.nick === 'string' && b.nick.trim() ? b.nick.trim() : null;
       const r = await c.query(
-        'INSERT INTO players (admin_id, name, nick, pos, photo_url) VALUES ($1, $2, $3, $4, $5) RETURNING id',
-        [adminId, b.name.trim(), nick, parsePos(b.pos), b.photoUrl ?? null]
+        'INSERT INTO players (name, nick, pos, photo_url, created_by) VALUES ($1, $2, $3, $4, $5) RETURNING id',
+        [b.name.trim(), nick, parsePos(b.pos), b.photoUrl ?? null, me.playerId]
       );
       playerId = r.rows[0].id;
     }

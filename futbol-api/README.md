@@ -15,9 +15,9 @@ historial con snapshots y transición automática a "Finalizado".
 1. Sube esta carpeta a un repositorio de GitHub.
 2. En https://vercel.com → Add New → Project → importa el repositorio.
 3. Variables de entorno (ver `.env.example`):
-   `DATABASE_URL`, `ADMIN_API_KEY`, `ADMIN_ID`, `CRON_SECRET`.
-4. Deploy. Prueba: `GET https://TU-PROYECTO.vercel.app/api/groups` con la
-   cabecera `x-api-key: <tu ADMIN_API_KEY>`.
+   `DATABASE_URL`, `CRON_SECRET`, `NEXT_PUBLIC_SUPABASE_URL`, `NEXT_PUBLIC_SUPABASE_ANON_KEY`
+   (desde la v1.3 ya no se usan `ADMIN_API_KEY` ni `ADMIN_ID`).
+4. Deploy y abre la web: regístrate con el email que pusiste en `admins` (ver v1.3 abajo).
 
 También con la CLI: `npm i && npx vercel --prod`.
 
@@ -28,7 +28,7 @@ con tu URL de Vercel y tu `CRON_SECRET`.
 Aunque el cron falle, `GET /api/matches` y `GET /api/history` también pasan a
 "Finalizado" los partidos vencidos, así que el estado nunca queda desfasado.
 
-## Endpoints (cabecera `x-api-key` en todos menos el cron)
+## Endpoints v1.2 (desde la v1.3 llevan `Authorization: Bearer <token de Supabase>`, ver abajo)
 
 | Método | Ruta | Función |
 |---|---|---|
@@ -78,3 +78,60 @@ y aparece el aviso "El partido ya se ha jugado. ¡Vota al MVP y registra el resu
 Endpoints nuevos: `PATCH /api/matches/:id/teams`, `POST /api/matches/:id/regenerate`, `GET /api/stats?groupId=`.
 La interfaz (pasos: grupo → modalidad/fecha/lugar → convocatoria → equipos con titulares y suplentes,
 arrastrar y soltar, resultado y MVP, Historial, Plantilla, Estadísticas) está en `app/components/App.tsx`.
+
+## Actualización v1.3 · Cuentas, chat y encuestas
+
+### Pasos (en este orden)
+1. **Supabase → SQL Editor**: ejecuta `supabase/05_migracion_v1.3_cuentas_chat.sql` (no borra datos, se puede repetir).
+2. **Supabase → Authentication → Providers → Email**: activado. *Confirm email* a tu gusto
+   (si está activo, el enlace del email hay que abrirlo en el mismo dispositivo).
+3. **Supabase → Authentication → URL Configuration**: *Site URL* = `https://TU-PROYECTO.vercel.app`
+   y en *Redirect URLs* añade `https://TU-PROYECTO.vercel.app/**` y `http://localhost:3000/**`.
+4. **Vercel → Settings → Environment Variables**: añade `NEXT_PUBLIC_SUPABASE_URL` y
+   `NEXT_PUBLIC_SUPABASE_ANON_KEY` (Supabase → Project Settings → API). Puedes borrar `ADMIN_API_KEY` y `ADMIN_ID`.
+5. `npm install` (añade `@supabase/supabase-js`) y despliega.
+6. Abre la app y **regístrate con el mismo email que tiene tu fila en `admins`**: pasas a ser el admin
+   de todos tus grupos de la v1.2. Si ya estabas en la plantilla como jugador manual, abre tu ficha en
+   Plantilla → “Unir con su cuenta” y elige tu cuenta (conserva tu historial).
+
+### Qué hay de nuevo
+- **Cuentas** (Supabase Auth, email + contraseña). Cada cuenta es un jugador (`players.auth_user_id`)
+  con perfil: nombre, apodo, posición y nivel (botón de perfil en Partidos).
+- **Roles por grupo** (`group_players.role`): `owner` (creador: todo, borrar grupo, nombrar co-admins),
+  `co_admin` (partidos, plantilla, encuestas, invitación) y `member` (chat, encuestas, ver partidos).
+  Las estrellas solo las ven owner y co-admins.
+- **Invitación por enlace** `/join/<token>` (Plantilla → Enlace de invitación). Se puede regenerar y
+  hacer caducar. Sin cuenta: registro y entra solo al grupo.
+- **Chat por grupo en tiempo real** (pestaña Chat) con **encuestas de asistencia**: Me apunto / No puedo /
+  Duda, cupo opcional con **lista de espera** automática.
+- **Crear Partido con Confirmados**: botón en la encuesta (admin/co-admin) que abre “Nuevo partido” con
+  grupo, fecha, modalidad y convocados ya puestos. Al guardar se cierra la encuesta y sale un mensaje
+  automático en el chat con el enlace al partido.
+- **Fechas**: no se pueden crear partidos ni encuestas en el pasado (input `datetime-local` con `min`,
+  validación en la API y trigger en la base de datos).
+- **Huérfanos**: un jugador manual que se queda sin grupos se desactiva y deja de salir en
+  “Añadir jugador de otro grupo”, que ahora solo muestra jugadores activos de tus otros grupos.
+- **Eliminar grupo** (solo el creador, escribiendo el nombre): borra en cascada chat, encuestas,
+  partidos (también su historial) y miembros.
+- **Seguridad**: RLS activado en todas las tablas; el navegador solo puede *leer* el chat y las
+  encuestas de sus grupos (para el tiempo real). Todo lo demás pasa por `/api`.
+
+### Endpoints nuevos
+| Método | Ruta | Permiso |
+|---|---|---|
+| GET / PATCH | `/api/me` | sesión |
+| GET / PATCH / DELETE | `/api/groups/:groupId` | miembro / admin·co-admin / owner |
+| POST | `/api/groups/:groupId/invite` | admin·co-admin (`{ expiresInDays: 1-30 \| null }`) |
+| GET | `/api/invites/:token` | pública |
+| POST | `/api/invites/:token/accept` | sesión |
+| PATCH | `/api/groups/:groupId/players/:playerId/role` | owner (`{ role: 'co_admin' \| 'member' }`) |
+| POST | `/api/groups/:groupId/players/:playerId/merge` | admin·co-admin (`{ intoPlayerId }`) |
+| GET | `/api/players?groupId=` | admin·co-admin (sugerencias de otros grupos) |
+| GET / POST | `/api/groups/:groupId/messages` | miembro |
+| POST | `/api/groups/:groupId/polls` | miembro (`{ question, matchAt, format?, maxSlots? }`) |
+| GET | `/api/polls/:pollId` | miembro |
+| POST | `/api/polls/:pollId/vote` | miembro (`{ choice: 'yes' \| 'no' \| 'maybe' }`) |
+| POST | `/api/polls/:pollId/close` | admin·co-admin (`{ reopen?: true }`) |
+
+`POST /api/matches` acepta además `pollId`. Crear, cancelar, regenerar, mover equipos y registrar
+resultado requieren ser owner o co-admin del grupo.

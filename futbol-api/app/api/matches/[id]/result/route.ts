@@ -1,12 +1,12 @@
 import { pool } from '@/lib/db';
 import { handle, readBody, HttpError } from '@/lib/http';
-import { requireAdmin } from '@/lib/auth';
-import { finishDueMatches } from '@/lib/queries';
+import { requireUser } from '@/lib/auth';
+import { assertUuid, finishDueMatches } from '@/lib/queries';
 
-// Registrar resultado y MVP de un partido ya finalizado.
+// Registrar resultado y MVP de un partido ya finalizado (admin o co-admin).
 // Body: { scoreA: number, scoreB: number, mvpEntryId?: string }
 export const POST = handle(async (req, { params }) => {
-  const adminId = requireAdmin(req);
+  const me = await requireUser(req);
   const { id } = await params;
   const b = await readBody(req);
   const scoreA = Number(b.scoreA);
@@ -22,11 +22,12 @@ export const POST = handle(async (req, { params }) => {
   }
   const r = await pool.query(
     `UPDATE matches m SET score_a = $3, score_b = $4, mvp_entry_id = $5
-       FROM groups g
-      WHERE m.id = $1 AND m.group_id = g.id AND g.admin_id = $2 AND m.status = 'finished'
+       FROM group_players gp
+      WHERE m.id = $1 AND gp.group_id = m.group_id AND gp.player_id = $2 AND gp.is_active
+        AND gp.role IN ('owner', 'co_admin') AND m.status = 'finished'
       RETURNING m.id`,
-    [id, adminId, scoreA, scoreB, b.mvpEntryId ?? null]
+    [assertUuid(id), me.playerId, scoreA, scoreB, b.mvpEntryId ?? null]
   );
-  if (!r.rowCount) throw new HttpError(409, 'Solo se puede registrar el resultado de un partido finalizado');
+  if (!r.rowCount) throw new HttpError(409, 'Solo el admin puede registrar el resultado, y solo de partidos finalizados');
   return Response.json({ id, scoreA, scoreB, mvpEntryId: b.mvpEntryId ?? null });
 });
