@@ -8,19 +8,27 @@ import { sb } from '@/lib/supabaseBrowser';
 /* ================================ tipos ================================ */
 type Pos = 'GK' | 'DEF' | 'ATT';
 type Role = 'owner' | 'co_admin' | 'member';
-type Group = { id: string; name: string; players: number; role: Role };
+type Group = { id: string; name: string; players: number; role: Role; unreadChat: number; newMatches: number };
 type Player = {
   id: string; name: string; nick: string | null; pos: Pos; photoUrl: string | null; stars: number;
-  role: Role; hasAccount: boolean;
+  role: Role; hasAccount: boolean; lastName: string | null; displayName: string;
 };
-type Me = { id: string; name: string; nick: string | null; pos: Pos; level: number; email: string | null };
+type Me = {
+  id: string; name: string; nick: string | null; lastName: string | null; displayName: string;
+  pos: Pos; level: number; email: string | null;
+};
+type Notif = {
+  id: string; groupId: string | null; groupName: string | null; type: 'chat' | 'poll' | 'match_created' | 'match_updated';
+  title: string; body: string; data: { matchId?: string; pollId?: string }; readAt: string | null; createdAt: string;
+};
+type GuestDraft = { name: string; stars: number; pos: Pos };
 type GroupInfo = { id: string; name: string; players: number; role: Role; invite: { url: string; expiresAt: string | null } | null };
 type Choice = 'yes' | 'no' | 'maybe';
-type PollUser = { id: string; name: string; nick: string | null; pos: Pos; votedAt: string };
+type PollUser = { id: string; name: string; nick: string | null; pos: Pos; votedAt: string; guest?: boolean; stars?: number };
 type Poll = {
   id: string; groupId: string; question: string; matchAt: string; format: string | null; maxSlots: number | null;
   status: 'open' | 'closed'; matchId: string | null; createdBy: string | null; createdAt: string;
-  counts: { yes: number; waitlist: number; maybe: number; no: number };
+  counts: { yes: number; waitlist: number; maybe: number; no: number; guests?: number };
   confirmed: PollUser[]; waitlist: PollUser[]; maybe: PollUser[]; no: PollUser[];
   myVote: Choice | null; myStatus: Choice | 'waitlist' | null;
 };
@@ -30,10 +38,10 @@ type ChatMsg = {
   authorName: string | null; authorNick: string | null; poll?: Poll | null;
 };
 /** Datos con los que se abre "Nuevo partido" desde una encuesta del chat */
-type Prefill = { groupId: string; when: string; playerIds: string[]; pollId: string; format: string | null };
+type Prefill = { groupId: string; when: string; playerIds: string[]; guests: GuestDraft[]; pollId: string; format: string | null };
 type Entry = {
   entryId: string; name: string; nick: string | null; pos: Pos; stars: number; photo: string | null;
-  team: 'A' | 'B'; isStarter: boolean;
+  team: 'A' | 'B'; isStarter: boolean; isGuest?: boolean; playerId?: string | null;
 };
 type Balance = {
   sumA: number; sumB: number; meanA: number; meanB: number; diffSum: number; diffMean: number; warnings?: string[];
@@ -41,11 +49,13 @@ type Balance = {
 type MatchRow = {
   id: string; groupId: string; groupName: string; scheduledAt: string; location: string | null; format: string;
   startersPerSide: number; status: string; balanceStats: Balance; playersCount: number;
+  guestsCount?: number; notes?: string | null; isNew?: boolean;
 };
 type Detail = {
   id: string; groupId: string; groupName: string; scheduledAt: string; location: string | null; format: string;
   startersPerSide: number; status: string; balanceStats: Balance; scoreA: number | null; scoreB: number | null;
   mvpEntryId: string | null; needsResult: boolean; roster: Entry[]; role: Role; canManage: boolean;
+  notes: string | null; updatedAt: string | null;
 };
 type HistRow = {
   id: string; groupId: string; groupName: string; scheduledAt: string; location: string | null; format: string;
@@ -55,8 +65,8 @@ type HistRow = {
 type StatRow = { playerId: string; name: string; nick: string | null; pos: Pos; stars: number; pj: number; w: number; mvp: number };
 type Call = <T>(path: string, method?: string, body?: unknown) => Promise<T>;
 type Tab = 'matches' | 'chat' | 'history' | 'squad' | 'stats';
-type View = null | { t: 'new'; prefill?: Prefill } | { t: 'match'; id: string; pack?: boolean };
-type PlayerInit = { id?: string; name: string; nick: string; pos: Pos; stars: number; role?: Role; hasAccount?: boolean };
+type View = null | { t: 'new'; prefill?: Prefill } | { t: 'match'; id: string; pack?: boolean } | { t: 'edit'; id: string };
+type PlayerInit = { id?: string; name: string; nick: string; lastName: string; pos: Pos; stars: number; role?: Role; hasAccount?: boolean };
 type SheetState =
   | null
   | { t: 'player'; init: PlayerInit; accounts: Player[] }
@@ -117,6 +127,10 @@ const localDT = (d: Date) => `${ymd(d)}T${pad(d.getHours())}:${pad(d.getMinutes(
 /** Mínimo seleccionable: el minuto siguiente (no se pueden crear partidos en el pasado) */
 const minDT = () => { const d = new Date(); d.setSeconds(0, 0); d.setMinutes(d.getMinutes() + 1); return localDT(d); };
 const isFutureDT = (v: string) => !!v && new Date(v).getTime() > Date.now();
+/** Mínimo de jugadores para crear un partido (5 contra 5) */
+const MIN_PLAYERS = 10;
+const badgeTxt = (n: number) => (n > 99 ? '+99' : String(n));
+const PENDING_INVITE = 'eqfc-pending-invite';
 
 /** Titulares primero; dentro de cada bloque, el portero arriba y luego por estrellas. */
 function sortTeam(list: Entry[]) {
@@ -126,20 +140,29 @@ function sortTeam(list: Entry[]) {
 }
 const sumOf = (l: Entry[]) => l.reduce((a, p) => a + p.stars, 0);
 
+/** Convocatoria lista para pegar en WhatsApp (negritas con *, emojis). */
 function lineupText(d: Detail) {
-  const L = [`Fútbol · ${MOD[d.format]?.label ?? d.format} · ${cap1(fmtD(d.scheduledAt, { weekday: 'long', day: 'numeric', month: 'long' }))} · ${hhmm(d.scheduledAt)}`];
-  if (d.location) L.push(d.location);
-  const line = (p: Entry) => `- ${p.name}${p.nick ? ` (${p.nick})` : ''}${p.pos === 'GK' ? ' [POR]' : ''}`;
+  const L = [
+    `⚽ *${d.groupName}* · ${MOD[d.format]?.label ?? d.format}`,
+    `📅 ${cap1(fmtD(d.scheduledAt, { weekday: 'long', day: 'numeric', month: 'long' }))}`,
+    `🕘 ${hhmm(d.scheduledAt)}h`,
+  ];
+  if (d.location) L.push(`📍 ${d.location}`);
+  if (d.notes) L.push(`📝 ${d.notes}`);
+  const line = (p: Entry) => `• ${p.name}${p.pos === 'GK' ? ' 🧤' : ''}${p.isGuest ? ' _(invitado)_' : ''}`;
   (['A', 'B'] as const).forEach((t) => {
     const list = sortTeam(d.roster.filter((r) => r.team === t));
-    L.push('', `EQUIPO ${t}`);
+    L.push('', t === 'A' ? '🟢 *EQUIPO A*' : '⚪ *EQUIPO B*');
     list.filter((p) => p.isStarter).forEach((p) => L.push(line(p)));
     const bench = list.filter((p) => !p.isStarter);
     if (bench.length) {
-      L.push('Suplentes:');
+      L.push('🪑 _Suplentes:_');
       bench.forEach((p) => L.push(line(p)));
     }
   });
+  const guests = d.roster.filter((p) => p.isGuest);
+  if (guests.length) L.push('', `👤 Invitados: ${guests.map((g) => g.name).join(', ')}`);
+  L.push('', `Total: ${d.roster.length} jugadores`);
   return L.join('\n');
 }
 
@@ -165,6 +188,10 @@ const IC: Record<string, string> = {
   link: '<path d="M10 14a4.5 4.5 0 006.4 0l3-3a4.5 4.5 0 00-6.4-6.4l-1 1"/><path d="M14 10a4.5 4.5 0 00-6.4 0l-3 3a4.5 4.5 0 006.4 6.4l1-1"/>',
   poll: '<path d="M5 20V10M10 20V4M15 20v-7M20 20v-4"/>',
   send: '<path d="M4 12l16-8-6 16-3-6.5z"/>',
+  bell: '<path d="M6 16V11a6 6 0 0112 0v5l1.5 2h-15z"/><path d="M10 20.5a2.2 2.2 0 004 0"/>',
+  edit: '<path d="M4 20h4L19 9l-4-4L4 16z"/><path d="M13.5 6.5l4 4"/>',
+  x: '<path d="M6 6l12 12M18 6L6 18"/>',
+  mail: '<rect x="3" y="5" width="18" height="14" rx="2.5"/><path d="M3.5 6.5l8.5 6.5 8.5-6.5"/>',
 };
 function Icon({ n }: { n: string }) {
   return (
@@ -238,9 +265,9 @@ function GroupSelect({ groups, value, onChange, label = 'Grupo' }: { groups: Gro
   );
 }
 
-function MatchCard({ m, count, played, right, onOpen }: {
+function MatchCard({ m, count, played, right, onOpen, fresh }: {
   m: { id: string; groupName: string; scheduledAt: string; location: string | null; format: string; balanceStats: Balance };
-  count?: number; played?: boolean; right: ReactNode; onOpen: () => void;
+  count?: number; played?: boolean; right: ReactNode; onOpen: () => void; fresh?: boolean;
 }) {
   const d = new Date(m.scheduledAt);
   const info = [m.groupName];
@@ -250,7 +277,7 @@ function MatchCard({ m, count, played, right, onOpen }: {
     <button className="card mcard" onClick={onOpen}>
       <span className="dbox"><b>{d.getDate()}</b><small>{fmtD(m.scheduledAt, { month: 'short' })}</small></span>
       <span className="minfo">
-        <span className="mtop"><b>{MOD[m.format]?.label ?? m.format}</b><span className="chip">{MOD[m.format]?.short ?? m.format}</span></span>
+        <span className="mtop"><b>{MOD[m.format]?.label ?? m.format}</b><span className="chip">{MOD[m.format]?.short ?? m.format}</span>{fresh && <span className="chip new">Nuevo</span>}</span>
         <span className="mmeta">{cap1(fmtD(m.scheduledAt, { weekday: 'long' }))} · {hhmm(m.scheduledAt)} · {m.location || 'Sin lugar'}</span>
         <span className="mmeta">{info.join(' · ')}</span>
       </span>
@@ -263,33 +290,42 @@ function MatchCard({ m, count, played, right, onOpen }: {
 type InvitePreview = { name: string; players: number; expired: boolean };
 
 /** Inicio de sesión y registro con email + contraseña (Supabase Auth). */
-function AuthScreen({ invite }: { invite?: InvitePreview | null }) {
+function AuthScreen({ invite, onCheckEmail }: { invite?: InvitePreview | null; onCheckEmail: (email: string) => void }) {
   const [mode, setMode] = useState<'login' | 'signup'>(invite ? 'signup' : 'login');
   const [name, setName] = useState('');
+  const [kind, setKind] = useState<'last' | 'nick'>('last');
+  const [second, setSecond] = useState('');
   const [email, setEmail] = useState('');
   const [pass, setPass] = useState('');
   const [err, setErr] = useState('');
-  const [info, setInfo] = useState('');
   const [busy, setBusy] = useState(false);
+
+  // Nombre visible: "Carlos M." (con apellido) o "Carlos 'El Mago'" (con apodo)
+  const preview = !name.trim() || !second.trim() ? ''
+    : kind === 'last' ? `${name.trim()} ${second.trim().charAt(0).toUpperCase()}.` : `${name.trim()} '${second.trim()}'`;
 
   const go = async () => {
     setBusy(true);
     setErr('');
-    setInfo('');
     try {
       if (mode === 'login') {
         const { error } = await sb().auth.signInWithPassword({ email: email.trim(), password: pass });
-        if (error) throw new Error(error.message === 'Invalid login credentials' ? 'Email o contraseña incorrectos.' : error.message);
+        if (error) throw new Error(error.message === 'Invalid login credentials' ? 'Email o contraseña incorrectos.'
+          : error.message === 'Email not confirmed' ? 'Aún no has confirmado tu email: revisa tu bandeja de entrada.' : error.message);
       } else {
         if (!name.trim()) throw new Error('Escribe tu nombre');
+        if (!second.trim()) throw new Error(kind === 'last' ? 'Escribe tu apellido' : 'Escribe tu apodo');
         if (pass.length < 6) throw new Error('La contraseña debe tener al menos 6 caracteres');
+        const meta: Record<string, string> = { name: name.trim() };
+        meta[kind === 'last' ? 'last_name' : 'nick'] = second.trim();
         const { data, error } = await sb().auth.signUp({
           email: email.trim(),
           password: pass,
-          options: { data: { name: name.trim() }, emailRedirectTo: window.location.href },
+          options: { data: meta, emailRedirectTo: window.location.href },
         });
         if (error) throw new Error(error.message);
-        if (!data.session) setInfo('Te hemos enviado un email de confirmación. Ábrelo en este mismo dispositivo y entrarás directamente.');
+        // Sin sesión = hay que confirmar el email: pantalla dedicada (no se queda en el formulario)
+        if (!data.session) onCheckEmail(email.trim());
       }
       // Con sesión, App lo detecta (onAuthStateChange) y entra solo.
     } catch (e) {
@@ -298,7 +334,7 @@ function AuthScreen({ invite }: { invite?: InvitePreview | null }) {
       setBusy(false);
     }
   };
-  const ok = email.trim() && pass && (mode === 'login' || name.trim());
+  const ok = email.trim() && pass && (mode === 'login' || (name.trim() && second.trim()));
 
   return (
     <div className="app">
@@ -315,7 +351,15 @@ function AuthScreen({ invite }: { invite?: InvitePreview | null }) {
           {mode === 'signup' && (
             <>
               <label htmlFor="a-name">Nombre</label>
-              <input id="a-name" value={name} onChange={(e) => setName(e.target.value)} autoComplete="name" maxLength={60} />
+              <input id="a-name" value={name} onChange={(e) => setName(e.target.value)} autoComplete="given-name" maxLength={60} />
+              <label htmlFor="a-second" style={{ marginTop: 6 }}>Apodo o apellido <span className="lockt">obligatorio</span></label>
+              <div className="seg">
+                <button className={kind === 'last' ? 'on' : ''} onClick={() => setKind('last')}>Apellido</button>
+                <button className={kind === 'nick' ? 'on' : ''} onClick={() => setKind('nick')}>Apodo</button>
+              </div>
+              <input id="a-second" value={second} onChange={(e) => setSecond(e.target.value)} maxLength={60}
+                autoComplete={kind === 'last' ? 'family-name' : 'off'} placeholder={kind === 'last' ? 'Martínez' : 'El Mago'} />
+              {preview && <span className="note">En el grupo te verán como <b>&nbsp;{preview}</b></span>}
             </>
           )}
           <label htmlFor="a-mail">Email</label>
@@ -326,7 +370,6 @@ function AuthScreen({ invite }: { invite?: InvitePreview | null }) {
             onKeyDown={(e) => { if (e.key === 'Enter' && ok) go(); }} />
         </div>
         {err && <div className="alert err">{err}</div>}
-        {info && <div className="alert">{info}</div>}
         <button className="btn ghost sm" style={{ alignSelf: 'center' }} onClick={() => { setMode(mode === 'login' ? 'signup' : 'login'); setErr(''); }}>
           {mode === 'login' ? '¿No tienes cuenta? Regístrate' : '¿Ya tienes cuenta? Inicia sesión'}
         </button>
@@ -340,7 +383,87 @@ function AuthScreen({ invite }: { invite?: InvitePreview | null }) {
   );
 }
 
+/** Pantalla "Revisa tu correo" tras registrarse (con o sin invitación pendiente). */
+function CheckEmail({ email, invite, onBack }: { email: string; invite?: InvitePreview | null; onBack: () => void }) {
+  const [sent, setSent] = useState(false);
+  const resend = async () => {
+    try {
+      const { error } = await sb().auth.resend({ type: 'signup', email, options: { emailRedirectTo: window.location.href } });
+      if (error) throw error;
+      setSent(true);
+    } catch (e) { alert(msg(e)); }
+  };
+  return (
+    <div className="app">
+      <Hdr eyebrow="Equilibrio FC" title="Revisa tu correo" />
+      <main className="main">
+        {invite && (
+          <div className="card invite-hero">
+            <span className="eyebrow">Ya casi estás en</span>
+            <b>{invite.name}</b>
+            <small>Confirma tu email y entrarás automáticamente al grupo</small>
+          </div>
+        )}
+        <div className="card checkmail">
+          <span className="bigicon"><Icon n="mail" /></span>
+          <b>Te hemos enviado un enlace de confirmación</b>
+          <span>a <b>{email}</b></span>
+          <ol>
+            <li>Abre el correo de <b>Supabase Auth</b> (mira también en spam).</li>
+            <li>Pulsa el enlace <b>en este mismo dispositivo y navegador</b>.</li>
+            <li>{invite ? `Entrarás directamente en “${invite.name}”.` : 'Entrarás directamente en la app.'}</li>
+          </ol>
+        </div>
+        <button className="btn ghost sm" style={{ alignSelf: 'center' }} disabled={sent} onClick={resend}>
+          {sent ? 'Correo reenviado' : '¿No te llega? Reenviar correo'}
+        </button>
+      </main>
+      <div className="foot"><button className="btn primary" onClick={onBack}>Volver a Entrar</button></div>
+    </div>
+  );
+}
+
 /* ============================ Nuevo partido (2 pasos) ============================ */
+/** Invitados externos (no registrados): nombre, valoración (3★ por defecto) y si es portero. */
+function GuestForm({ onAdd, busy }: { onAdd: (g: GuestDraft) => void | Promise<void>; busy?: boolean }) {
+  const [name, setName] = useState('');
+  const [stars, setStars] = useState(3);
+  const [gk, setGk] = useState(false);
+  const add = async () => {
+    if (!name.trim()) return;
+    await onAdd({ name: name.trim(), stars, pos: gk ? 'GK' : 'DEF' });
+    setName(''); setStars(3); setGk(false);
+  };
+  return (
+    <div className="guestform">
+      <input value={name} maxLength={60} placeholder="Nombre del invitado" onChange={(e) => setName(e.target.value)}
+        onKeyDown={(e) => { if (e.key === 'Enter') add(); }} aria-label="Nombre del invitado" />
+      <select value={stars} onChange={(e) => setStars(Number(e.target.value))} aria-label="Estrellas del invitado">
+        {[1, 1.5, 2, 2.5, 3, 3.5, 4, 4.5, 5].map((v) => <option key={v} value={v}>{f1(v)}★</option>)}
+      </select>
+      <button className={`btn sm${gk ? ' primary' : ''}`} onClick={() => setGk(!gk)} title="¿Es portero?">🧤</button>
+      <button className="btn sm" disabled={!name.trim() || busy} onClick={add}><Icon n="plus" /></button>
+    </div>
+  );
+}
+
+function GuestList({ guests, onChange }: { guests: GuestDraft[]; onChange: (g: GuestDraft[]) => void }) {
+  return (
+    <div className="card form">
+      <div className="lbl">Invitados externos · {guests.length}</div>
+      {guests.map((g, i) => (
+        <div key={i} className="prow ro">
+          <Av name={g.name} />
+          <span className="pname"><b>{g.name}</b><small>Invitado{g.pos === 'GK' ? ' · portero' : ''}</small></span>
+          <span className="rate">{f1(g.stars)}</span>
+          <button className="iconbtn" onClick={() => onChange(guests.filter((_, j) => j !== i))} aria-label={`Quitar a ${g.name}`}><Icon n="x" /></button>
+        </div>
+      ))}
+      <GuestForm onAdd={(g) => onChange([...guests, g])} />
+    </div>
+  );
+}
+
 /** Modalidad sugerida según cuántos se apuntaron (si la encuesta no la indicaba) */
 const guessMod = (n: number) => (n >= 22 ? '11v11' : n >= 14 ? '7v7' : '5v5');
 
@@ -349,7 +472,10 @@ function NewMatch({ groups, prefill, call, flash, onClose, onCreated }: {
 }) {
   const [step, setStep] = useState<1 | 2>(1);
   const [groupId, setGroupId] = useState(prefill?.groupId ?? '');
-  const [mod, setMod] = useState(prefill ? (prefill.format && MOD[prefill.format] ? prefill.format : guessMod(prefill.playerIds.length)) : '7v7');
+  const [mod, setMod] = useState(prefill
+    ? (prefill.format && MOD[prefill.format] ? prefill.format : guessMod(prefill.playerIds.length + prefill.guests.length))
+    : '7v7');
+  const [guests, setGuests] = useState<GuestDraft[]>(prefill?.guests ?? []);
   const [when, setWhen] = useState(() => {
     const fromPoll = prefill ? localDT(new Date(prefill.when)) : '';
     return fromPoll && isFutureDT(fromPoll) ? fromPoll : `${nextThursday()}T21:00`;
@@ -384,12 +510,13 @@ function NewMatch({ groups, prefill, call, flash, onClose, onCreated }: {
   const futureOk = isFutureDT(when);
 
   const toggle = (id: string) => setSel((s) => (s.includes(id) ? s.filter((x) => x !== id) : [...s, id]));
-  const n = sel.length;
+  const n = sel.length + guests.length; // los invitados externos también juegan
+  const enough = n >= MIN_PLAYERS;
   const starters = MOD[mod].n;
   const big = Math.ceil(n / 2);
   const small = Math.floor(n / 2);
   const bench = Math.max(0, big - starters);
-  const gk = players.filter((p) => sel.includes(p.id) && p.pos === 'GK').length;
+  const gk = players.filter((p) => sel.includes(p.id) && p.pos === 'GK').length + guests.filter((g) => g.pos === 'GK').length;
   const plan = n < 2 ? 'Elige al menos 2 jugadores.'
     : bench === 0 ? `${big} vs ${small} · sin suplentes`
       : `${big} vs ${small} · ${starters} titulares + ${bench} suplente${bench > 1 ? 's' : ''} por equipo`;
@@ -412,7 +539,7 @@ function NewMatch({ groups, prefill, call, flash, onClose, onCreated }: {
     setBusy(true);
     try {
       const r = await call<{ id: string }>('/api/matches', 'POST', {
-        groupId, format: mod, playerIds: sel, location: venue.trim() || null,
+        groupId, format: mod, playerIds: sel, guests, location: venue.trim() || null,
         scheduledAt: new Date(when).toISOString(),
         pollId: prefill?.pollId ?? null,
       });
@@ -436,7 +563,7 @@ function NewMatch({ groups, prefill, call, flash, onClose, onCreated }: {
                 {groups.map((g) => <option key={g.id} value={g.id}>{g.name} ({g.players} jugadores)</option>)}
               </select>
               {groups.length === 0 && <div className="warnbox" style={{ marginTop: 6 }}><Icon n="warn" /><span>No administras ningún grupo. Crea uno en la pestaña Plantilla.</span></div>}
-              {prefill && <div className="note" style={{ marginTop: 6 }}><Icon n="poll" /><span>{prefill.playerIds.length} confirmados en la encuesta. Puedes ajustar la convocatoria en el paso 2 y los titulares/suplentes al ver los equipos.</span></div>}
+              {prefill && <div className="note" style={{ marginTop: 6 }}><Icon n="poll" /><span>{prefill.playerIds.length} confirmados{prefill.guests.length ? ` y ${prefill.guests.length} invitados` : ''} en la encuesta. Puedes ajustar la convocatoria en el paso 2 y, una vez creado, editarlo todo (equipos, titulares y suplentes).</span></div>}
             </div>
             {groupId && (
               <div className="card form">
@@ -468,15 +595,17 @@ function NewMatch({ groups, prefill, call, flash, onClose, onCreated }: {
               </div>
               <div className="plan">{plan}</div>
               {n >= 2 && gk < 2 && <div className="warnbox" style={{ marginTop: 10 }}><Icon n="warn" /><span>Necesitas 2 porteros para que cada equipo tenga el suyo.</span></div>}
+              {!enough && <div className="errtxt">No son suficientes jugadores para crear un partido (mínimo {MIN_PLAYERS})</div>}
             </div>
+            <GuestList guests={guests} onChange={setGuests} />
             {players.length === 0 && <div className="empty">Este grupo no tiene jugadores todavía. Añádelos en la pestaña Plantilla.</div>}
             {sorted.map((p) => {
               const on = sel.includes(p.id);
               return (
                 <button key={p.id} className={`prow sel${on ? ' on' : ''}`} onClick={() => toggle(p.id)} aria-pressed={on}>
                   <span className="cb"><Icon n="check" /></span>
-                  <Av name={p.name} />
-                  <span className="pname"><b>{p.name}</b><small>{p.nick || POS[p.pos].label}</small></span>
+                  <Av name={p.displayName ?? p.name} />
+                  <span className="pname"><b>{p.displayName ?? p.name}</b><small>{POS[p.pos].label}{prefill?.playerIds.includes(p.id) ? ' · se apuntó' : ''}</small></span>
                   <PosChip pos={p.pos} />
                   <span className="rate">{f1(p.stars)}</span>
                 </button>
@@ -491,7 +620,7 @@ function NewMatch({ groups, prefill, call, flash, onClose, onCreated }: {
         ) : (
           <>
             <button className="btn" onClick={() => setStep(1)}>Atrás</button>
-            <button className="btn primary" disabled={n < 2 || busy} onClick={generate}>{busy ? 'Generando…' : 'Generar equipos'}</button>
+            <button className="btn primary" disabled={!enough || busy} onClick={generate}>{busy ? 'Generando…' : 'Generar equipos'}</button>
           </>
         )}
       </div>
@@ -513,7 +642,7 @@ function TeamPanel({ side, list, editable, anim, offset, onSwap, showStars = tru
       data-eid={p.entryId} style={{ '--i': i + offset } as CSSProperties}>
       {editable && <span className="grip" data-handle="1" title="Arrastra para cambiar de equipo"><Icon n="grip" /></span>}
       <Av name={p.name} />
-      <span className="pname"><b>{p.name}</b><small>{p.nick || POS[p.pos].label}</small></span>
+      <span className="pname"><b>{p.name}</b><small>{p.isGuest ? 'Invitado' : p.nick && !p.name.includes(p.nick) ? p.nick : POS[p.pos].label}</small></span>
       <PosChip pos={p.pos} />
       {showStars ? <span className="rate">{f1(p.stars)}</span> : <span />}
       {editable && <button className="iconbtn" onClick={() => onSwap(p.entryId)} aria-label={`Pasar a Equipo ${other}`}><Icon n="swap" /></button>}
@@ -536,8 +665,9 @@ function TeamPanel({ side, list, editable, anim, offset, onSwap, showStars = tru
   );
 }
 
-function MatchView({ id, startPack, call, flash, onBack, onChanged, openText, openResult }: {
+function MatchView({ id, startPack, call, flash, onBack, onChanged, openText, openResult, onEdit }: {
   id: string; startPack: boolean; call: Call; flash: (m: string) => void; onBack: () => void; onChanged: () => void;
+  onEdit: () => void;
   openText: (t: string) => void;
   openResult: (info: { id: string; title: string; roster: Entry[]; scoreA: number | null; scoreB: number | null; mvp: string | null; onSaved: () => void }) => void;
 }) {
@@ -702,7 +832,7 @@ function MatchView({ id, startPack, call, flash, onBack, onChanged, openText, op
     const txt = lineupText(d);
     const fallback = () => openText(txt);
     try {
-      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(() => flash('Alineación copiada'), fallback);
+      if (navigator.clipboard && navigator.clipboard.writeText) navigator.clipboard.writeText(txt).then(() => flash('Convocatoria copiada: pégala en WhatsApp'), fallback);
       else fallback();
     } catch { fallback(); }
   };
@@ -764,7 +894,12 @@ function MatchView({ id, startPack, call, flash, onBack, onChanged, openText, op
           <b>{cap1(fmtD(d.scheduledAt, { weekday: 'long', day: 'numeric', month: 'long' }))} · {hhmm(d.scheduledAt)}</b>
           <span>{MOD[d.format]?.label ?? d.format} · {d.location || 'Sin lugar'}</span>
           {d.location && <a className="maps" target="_blank" rel="noopener noreferrer" href={mapsUrl(d.location)}><Icon n="pin" /> Ver en Google Maps</a>}
+          {d.notes && <span className="mnotes">📝 {d.notes}</span>}
+          {d.updatedAt && <small className="lockt">Actualizado {cap1(fmtD(d.updatedAt, { weekday: 'short', day: 'numeric', month: 'short' }))} · {hhmm(d.updatedAt)}</small>}
         </div>
+        {d.status === 'pending' && d.canManage && (
+          <button className="btn block" onClick={onEdit}><Icon n="edit" /> Editar partido (fecha, lugar, jugadores, invitados y equipos)</button>
+        )}
 
         {d.status === 'cancelled' && <div className="alert err">Este partido está cancelado.</div>}
         {finished && d.needsResult && (
@@ -805,7 +940,171 @@ function MatchView({ id, startPack, call, flash, onBack, onChanged, openText, op
       </main>
       <div className="foot">
         {d.status === 'pending' && d.canManage && <button className="btn" onClick={regenerate} disabled={busy}><Icon n="shuffle" /> Regenerar</button>}
-        <button className="btn primary" onClick={copy}><Icon n="copy" /> Copiar alineación</button>
+        <button className="btn primary" onClick={copy}><Icon n="copy" /> Copiar para WhatsApp</button>
+      </div>
+    </>
+  );
+}
+
+/* ============================ Editar partido (admin) ============================ */
+type EdRow = {
+  key: string; entryId?: string; playerId?: string | null; name: string; pos: Pos; stars: number;
+  team: 'A' | 'B'; isStarter: boolean; isGuest: boolean;
+};
+
+function MatchEditor({ id, call, flash, onClose, onSaved }: {
+  id: string; call: Call; flash: (m: string) => void; onClose: () => void; onSaved: () => void;
+}) {
+  const [d, setD] = useState<Detail | null>(null);
+  const [members, setMembers] = useState<Player[]>([]);
+  const [when, setWhen] = useState('');
+  const [minWhen, setMinWhen] = useState(minDT);
+  const [venue, setVenue] = useState('');
+  const [notes, setNotes] = useState('');
+  const [mod, setMod] = useState('7v7');
+  const [rows, setRows] = useState<EdRow[]>([]);
+  const [addId, setAddId] = useState('');
+  const [busy, setBusy] = useState(false);
+  const seq = useRef(0);
+
+  useEffect(() => {
+    call<Detail>(`/api/matches/${id}`).then((m) => {
+      setD(m);
+      setWhen(localDT(new Date(m.scheduledAt)));
+      setVenue(m.location ?? '');
+      setNotes(m.notes ?? '');
+      setMod(m.format);
+      setRows(m.roster.map((r) => ({
+        key: r.entryId, entryId: r.entryId, playerId: r.playerId ?? null, name: r.name, pos: r.pos, stars: r.stars,
+        team: r.team, isStarter: r.isStarter, isGuest: !!r.isGuest,
+      })));
+      return call<Player[]>(`/api/groups/${m.groupId}/players`).then(setMembers);
+    }).catch((e) => flash(msg(e)));
+  }, [call, id, flash]);
+
+  if (!d) return (<><Hdr eyebrow="Editar partido" title="Cargando…" onBack={onClose} /><main className="main"><div className="empty">Cargando…</div></main></>);
+
+  const per = MOD[mod].n;
+  const inTeam = (t: 'A' | 'B') => rows.filter((r) => r.team === t);
+  const startersIn = (t: 'A' | 'B') => inTeam(t).filter((r) => r.isStarter).length;
+  const smaller = (): 'A' | 'B' => (inTeam('A').length <= inTeam('B').length ? 'A' : 'B');
+  const upd = (key: string, patch: Partial<EdRow>) => setRows((l) => l.map((r) => (r.key === key ? { ...r, ...patch } : r)));
+  const available = members.filter((m) => !rows.some((r) => r.playerId === m.id));
+  const total = rows.length;
+  const sum = (t: 'A' | 'B') => inTeam(t).reduce((a, r) => a + r.stars, 0);
+
+  const addRow = (r: Omit<EdRow, 'team' | 'isStarter'>) => {
+    const team = smaller();
+    setRows((l) => [...l, { ...r, team, isStarter: l.filter((x) => x.team === team && x.isStarter).length < per }]);
+  };
+  const addMember = () => {
+    const m = members.find((x) => x.id === addId);
+    if (!m) return;
+    addRow({ key: `new:${m.id}`, playerId: m.id, name: m.displayName ?? m.name, pos: m.pos, stars: Math.min(5, Math.max(1, m.stars)), isGuest: false });
+    setAddId('');
+  };
+  const addGuest = (g: GuestDraft) => addRow({ key: `guest:${++seq.current}`, name: g.name, pos: g.pos, stars: g.stars, isGuest: true });
+
+  const rebalance = async () => {
+    if (rows.length < 2) return;
+    setBusy(true);
+    try {
+      const r = await call<{ assignment: { key: string; team: 'A' | 'B'; isStarter: boolean }[] }>(`/api/matches/${id}/rebalance`, 'POST', {
+        format: mod, roster: rows.map((x) => ({ key: x.key, stars: x.stars, pos: x.pos })),
+      });
+      const by = new Map(r.assignment.map((a) => [a.key, a]));
+      setRows((l) => l.map((x) => ({ ...x, team: by.get(x.key)?.team ?? x.team, isStarter: by.get(x.key)?.isStarter ?? x.isStarter })));
+      flash('Equipos re-equilibrados (aún sin guardar)');
+    } catch (e) { flash(msg(e)); } finally { setBusy(false); }
+  };
+
+  const save = async () => {
+    if (!isFutureDT(when)) { flash('La fecha y hora deben ser posteriores a este momento'); return; }
+    setBusy(true);
+    try {
+      const r = await call<Detail & { changes: string[] }>(`/api/matches/${id}`, 'PUT', {
+        scheduledAt: new Date(when).toISOString(), location: venue.trim() || null, notes: notes.trim() || null, format: mod,
+        roster: rows.map((x) => ({
+          ...(x.entryId ? { entryId: x.entryId } : x.isGuest ? { guest: { name: x.name, pos: x.pos } } : { playerId: x.playerId }),
+          team: x.team, isStarter: x.isStarter, stars: x.stars,
+        })),
+      });
+      flash(r.changes.length ? 'Cambios guardados y avisados en el chat' : 'Sin cambios');
+      onSaved();
+    } catch (e) { flash(msg(e)); setBusy(false); }
+  };
+
+  const row = (r: EdRow) => (
+    <div key={r.key} className={`edrow${r.isStarter ? '' : ' bench'}`}>
+      <span className="pname"><b>{r.name}</b><small>{r.isGuest ? 'Invitado' : POS[r.pos].label}{r.entryId ? '' : ' · nuevo'}</small></span>
+      <span className="stepper">
+        <button onClick={() => upd(r.key, { stars: Math.max(0.5, r.stars - 0.5) })} aria-label="Menos estrellas">−</button>
+        <b>{f1(r.stars)}</b>
+        <button onClick={() => upd(r.key, { stars: Math.min(5, r.stars + 0.5) })} aria-label="Más estrellas">+</button>
+      </span>
+      <button className="btn sm" onClick={() => upd(r.key, { isStarter: !r.isStarter })}>{r.isStarter ? 'Titular' : 'Suplente'}</button>
+      <button className="btn sm" onClick={() => upd(r.key, { team: r.team === 'A' ? 'B' : 'A' })} aria-label="Cambiar de equipo">→ {r.team === 'A' ? 'B' : 'A'}</button>
+      <button className="iconbtn" onClick={() => setRows((l) => l.filter((x) => x.key !== r.key))} aria-label={`Quitar a ${r.name}`}><Icon n="x" /></button>
+    </div>
+  );
+  const team = (t: 'A' | 'B') => {
+    const list = inTeam(t).sort((a, b) => Number(b.isStarter) - Number(a.isStarter) || b.stars - a.stars);
+    const st = startersIn(t);
+    return (
+      <section className={`team t${t}`}>
+        <div className="thead">
+          <h3>Equipo {t}</h3>
+          <span className={`chip ${st === per ? 'ok' : 'warn'}`}>{st}/{per} titulares</span>
+          <span className="tcount">{list.length} jug. · {f1(sum(t))}★</span>
+        </div>
+        <div className="tlist">{list.map(row)}</div>
+      </section>
+    );
+  };
+
+  return (
+    <>
+      <Hdr eyebrow={`Editar partido · ${d.groupName}`} title="Editar partido" onBack={onClose} />
+      <main className="main">
+        <div className="card form">
+          <label htmlFor="e-when">Fecha y hora</label>
+          <input id="e-when" type="datetime-local" value={when} min={minWhen} onFocus={() => setMinWhen(minDT())} onChange={(e) => setWhen(e.target.value)} />
+          {!isFutureDT(when) && <div className="warnbox"><Icon n="warn" /><span>Elige una fecha y hora posteriores a este momento.</span></div>}
+          <div className="lbl" style={{ marginTop: 6 }}>Modalidad</div>
+          <div className="seg">
+            {Object.keys(MOD).map((k) => <button key={k} className={mod === k ? 'on' : ''} onClick={() => setMod(k)}>{MOD[k].short}</button>)}
+          </div>
+          <label htmlFor="e-venue" style={{ marginTop: 6 }}>Lugar / campo</label>
+          <input id="e-venue" value={venue} maxLength={200} onChange={(e) => setVenue(e.target.value)} placeholder="Pista, polideportivo o dirección" />
+          <label htmlFor="e-notes" style={{ marginTop: 6 }}>Notas</label>
+          <textarea id="e-notes" value={notes} maxLength={500} rows={2} onChange={(e) => setNotes(e.target.value)} placeholder="Llevad peto blanco y oscuro, se paga en pista…" />
+        </div>
+
+        <div className="card">
+          <div className="counter"><b>{total}</b><span>convocados · A {f1(sum('A'))}★ · B {f1(sum('B'))}★</span></div>
+          {total < MIN_PLAYERS && <div className="errtxt">No son suficientes jugadores para un partido (mínimo {MIN_PLAYERS})</div>}
+        </div>
+
+        {team('A')}
+        {team('B')}
+
+        <div className="card form">
+          <div className="lbl">Añadir jugador del grupo</div>
+          <div className="two">
+            <select value={addId} onChange={(e) => setAddId(e.target.value)} aria-label="Jugador del grupo">
+              <option value="">{available.length ? 'Elige un jugador…' : 'Ya están todos convocados'}</option>
+              {available.map((m) => <option key={m.id} value={m.id}>{m.displayName ?? m.name} · {f1(m.stars)}★</option>)}
+            </select>
+            <button className="btn sm" disabled={!addId} onClick={addMember}><Icon n="plus" /> Añadir</button>
+          </div>
+          <div className="lbl" style={{ marginTop: 6 }}>Añadir invitado externo</div>
+          <GuestForm onAdd={addGuest} />
+        </div>
+        <div className="note"><Icon n="lock" /><span>Al guardar se publica un resumen de los cambios en el chat del grupo y se avisa a los convocados.</span></div>
+      </main>
+      <div className="foot">
+        <button className="btn" onClick={rebalance} disabled={busy || rows.length < 2}><Icon n="shuffle" /> Re-equilibrar</button>
+        <button className="btn primary" onClick={save} disabled={busy || rows.length < 2 || !isFutureDT(when)}>{busy ? 'Guardando…' : 'Guardar cambios'}</button>
       </div>
     </>
   );
@@ -847,7 +1146,9 @@ function PlayerSheet({ init, groupId, myRole, meId, accounts, call, flash, onClo
     if (!s.name.trim()) { flash('Escribe un nombre'); nameRef.current?.focus(); return; }
     setBusy(true);
     try {
-      const body = { name: s.name.trim(), nick: s.nick.trim(), pos: s.pos, stars: s.stars };
+      // Con cuenta, nombre/apodo/apellido son del propio jugador: aquí solo posición y estrellas
+      const body = s.hasAccount ? { pos: s.pos, stars: s.stars }
+        : { name: s.name.trim(), nick: s.nick.trim(), lastName: s.lastName.trim(), pos: s.pos, stars: s.stars };
       if (s.id) await call(`/api/groups/${groupId}/players/${s.id}`, 'PATCH', body);
       else await call(`/api/groups/${groupId}/players`, 'POST', body);
       flash('Jugador guardado');
@@ -868,8 +1169,13 @@ function PlayerSheet({ init, groupId, myRole, meId, accounts, call, flash, onClo
     <SheetShell title={s.id ? 'Editar jugador' : 'Nuevo jugador'} onClose={onClose}>
       <label htmlFor="f-name">Nombre{s.hasAccount && <span className="lockt" style={{ marginLeft: 'auto' }}>lo cambia el jugador en su perfil</span>}</label>
       <input id="f-name" ref={nameRef} value={s.name} onChange={(e) => setS({ ...s, name: e.target.value })} autoComplete="off" disabled={!!s.hasAccount} />
-      <label htmlFor="f-nick" style={{ marginTop: 6 }}>Apodo (opcional)</label>
-      <input id="f-nick" value={s.nick} onChange={(e) => setS({ ...s, nick: e.target.value })} autoComplete="off" />
+      <div className="two" style={{ marginTop: 6 }}>
+        <div><label htmlFor="f-last">Apellido</label>
+          <input id="f-last" value={s.lastName} onChange={(e) => setS({ ...s, lastName: e.target.value })} autoComplete="off" disabled={!!s.hasAccount} /></div>
+        <div><label htmlFor="f-nick">Apodo</label>
+          <input id="f-nick" value={s.nick} onChange={(e) => setS({ ...s, nick: e.target.value })} autoComplete="off" disabled={!!s.hasAccount} /></div>
+      </div>
+      <span className="note">Con apodo se verá “{s.name || 'Nombre'} '{s.nick || 'apodo'}'”; con apellido, “{s.name || 'Nombre'} {(s.lastName || 'A').charAt(0).toUpperCase()}.”. No puede haber dos iguales en el grupo.</span>
       <div className="lbl" style={{ marginTop: 6 }}>Posición principal</div>
       <div className="seg">
         {(['GK', 'DEF', 'ATT'] as Pos[]).map((k) => (
@@ -888,7 +1194,7 @@ function PlayerSheet({ init, groupId, myRole, meId, accounts, call, flash, onClo
           <label htmlFor="f-merge">¿Se ha registrado? Unir con su cuenta</label>
           <select id="f-merge" value={mergeInto} onChange={(e) => setMergeInto(e.target.value)}>
             <option value="">Elige su cuenta…</option>
-            {accounts.map((a) => <option key={a.id} value={a.id}>{a.name}</option>)}
+            {accounts.map((a) => <option key={a.id} value={a.id}>{a.displayName ?? a.name}</option>)}
           </select>
           <button className="btn sm" disabled={!mergeInto || busy} onClick={merge}>Unir (conserva su historial)</button>
         </div>
@@ -992,13 +1298,15 @@ function ExistingSheet({ groupId, call, flash, onClose, onDone }: {
 function ProfileSheet({ me, call, flash, onClose, onSaved, onLogout }: {
   me: Me; call: Call; flash: (m: string) => void; onClose: () => void; onSaved: (m: Me) => void; onLogout: () => void;
 }) {
-  const [s, setS] = useState({ name: me.name, nick: me.nick ?? '', pos: me.pos, level: me.level });
+  const [s, setS] = useState({ name: me.name, nick: me.nick ?? '', lastName: me.lastName ?? '', pos: me.pos, level: me.level });
   const [busy, setBusy] = useState(false);
+  const preview = s.nick.trim() ? `${s.name.trim()} '${s.nick.trim()}'` : s.lastName.trim() ? `${s.name.trim()} ${s.lastName.trim().charAt(0).toUpperCase()}.` : '';
   const save = async () => {
     if (!s.name.trim()) { flash('Escribe tu nombre'); return; }
+    if (!s.nick.trim() && !s.lastName.trim()) { flash('Pon un apodo o un apellido'); return; }
     setBusy(true);
     try {
-      const m = await call<Me>('/api/me', 'PATCH', { name: s.name.trim(), nick: s.nick.trim(), pos: s.pos, level: s.level });
+      const m = await call<Me>('/api/me', 'PATCH', { name: s.name.trim(), nick: s.nick.trim(), lastName: s.lastName.trim(), pos: s.pos, level: s.level });
       flash('Perfil guardado');
       onSaved(m);
     } catch (e) { flash(msg(e)); setBusy(false); }
@@ -1008,8 +1316,13 @@ function ProfileSheet({ me, call, flash, onClose, onSaved, onLogout }: {
       <div className="note" style={{ marginBottom: 6 }}><Icon n="user" /><span>{me.email}</span></div>
       <label htmlFor="m-name">Nombre</label>
       <input id="m-name" value={s.name} maxLength={60} onChange={(e) => setS({ ...s, name: e.target.value })} />
-      <label htmlFor="m-nick" style={{ marginTop: 6 }}>Apodo (opcional)</label>
-      <input id="m-nick" value={s.nick} onChange={(e) => setS({ ...s, nick: e.target.value })} />
+      <div className="two" style={{ marginTop: 6 }}>
+        <div><label htmlFor="m-last">Apellido</label><input id="m-last" value={s.lastName} maxLength={60} onChange={(e) => setS({ ...s, lastName: e.target.value })} /></div>
+        <div><label htmlFor="m-nick">Apodo</label><input id="m-nick" value={s.nick} maxLength={60} onChange={(e) => setS({ ...s, nick: e.target.value })} /></div>
+      </div>
+      {preview
+        ? <span className="note">En tus grupos te verán como <b>&nbsp;{preview}</b>{s.nick.trim() && s.lastName.trim() ? ' (manda el apodo)' : ''}</span>
+        : <span className="errtxt">Obligatorio: pon un apodo o un apellido para que no haya dos iguales en el grupo.</span>}
       <div className="lbl" style={{ marginTop: 6 }}>Posición preferida</div>
       <div className="seg">
         {(['GK', 'DEF', 'ATT'] as Pos[]).map((k) => (
@@ -1143,11 +1456,14 @@ function rowToMsg(r: Record<string, unknown>, names: Map<string, { name: string;
   };
 }
 
-function PollCard({ poll, meId, manage, onVote, onCreateMatch, onOpenMatch, onToggle }: {
+function PollCard({ poll, meId, manage, onVote, onCreateMatch, onOpenMatch, onToggle, onAddGuest, onRemoveGuest }: {
   poll: Poll; meId: string; manage: boolean;
   onVote: (c: Choice) => Promise<void>; onCreateMatch: () => void; onOpenMatch: (id: string) => void; onToggle: () => Promise<void>;
+  onAddGuest: (g: GuestDraft) => Promise<void>; onRemoveGuest: (guestId: string) => Promise<void>;
 }) {
   const [busy, setBusy] = useState(false);
+  const [guestOpen, setGuestOpen] = useState(false);
+  const enough = poll.confirmed.length >= MIN_PLAYERS;
   const closed = poll.status === 'closed';
   const fill = poll.maxSlots ? Math.min(100, (poll.counts.yes / poll.maxSlots) * 100) : 0;
   const waitPos = poll.waitlist.findIndex((u) => u.id === meId);
@@ -1162,7 +1478,14 @@ function PollCard({ poll, meId, manage, onVote, onCreateMatch, onOpenMatch, onTo
       <div className="plist">
         <div className={`plt ${cls}`}>{title} · {list.length}</div>
         <div className="pchips">
-          {list.map((u, i) => <span key={u.id} className="pchip">{numbered ? `${i + 1}. ` : ''}{u.nick || u.name}{u.pos === 'GK' ? ' 🧤' : ''}</span>)}
+          {list.map((u, i) => (
+            <span key={u.id} className={`pchip${u.guest ? ' guest' : ''}`}>
+              {numbered ? `${i + 1}. ` : ''}{u.name}{u.pos === 'GK' ? ' 🧤' : ''}{u.guest ? ' · inv.' : ''}
+              {u.guest && manage && !closed && (
+                <button className="pchipx" aria-label={`Quitar invitado ${u.name}`} onClick={() => run(() => onRemoveGuest(u.id))}>×</button>
+              )}
+            </span>
+          ))}
         </div>
       </div>
     );
@@ -1197,7 +1520,11 @@ function PollCard({ poll, meId, manage, onVote, onCreateMatch, onOpenMatch, onTo
         <button className="btn sm" onClick={() => onOpenMatch(poll.matchId as string)}>Ver partido creado <Icon n="chev" /></button>
       ) : manage && (
         <>
-          <button className="btn primary sm" disabled={poll.confirmed.length < 2} onClick={onCreateMatch}>
+          {!closed && (guestOpen
+            ? <GuestForm busy={busy} onAdd={(g) => run(() => onAddGuest(g))} />
+            : <button className="btn ghost sm" onClick={() => setGuestOpen(true)}><Icon n="plus" /> Añadir invitado</button>)}
+          {!enough && <div className="errtxt">No son suficientes jugadores para crear un partido (mínimo {MIN_PLAYERS}). Ahora hay {poll.confirmed.length}.</div>}
+          <button className="btn primary sm" disabled={!enough} onClick={onCreateMatch}>
             <Icon n="plus" /> Crear Partido con Confirmados
           </button>
           <button className="btn ghost sm" disabled={busy} onClick={() => run(onToggle)}>{closed ? 'Reabrir encuesta' : 'Cerrar encuesta'}</button>
@@ -1227,7 +1554,7 @@ function PollSheet({ groupId, call, flash, onClose, onCreated }: {
     setBusy(true);
     try {
       const m = await call<ChatMsg>(`/api/groups/${groupId}/polls`, 'POST', {
-        question: q.trim(), matchAt: new Date(when).toISOString(), format: mod, maxSlots: limit ? slots : null,
+        question: q.trim(), matchAt: new Date(when).toISOString(), format: mod, maxSlots: limit ? Math.max(1, slots) : null,
       });
       onCreated(m);
       onClose();
@@ -1252,19 +1579,21 @@ function PollSheet({ groupId, call, flash, onClose, onCreated }: {
           <button className={limit ? 'on' : ''} onClick={() => setLimit(true)}>Con cupo</button>
           <button className={!limit ? 'on' : ''} onClick={() => setLimit(false)}>Sin límite</button>
         </div>
-        <input type="number" min={2} max={60} value={slots} disabled={!limit} aria-label="Plazas"
-          onChange={(e) => setSlots(Math.max(2, Math.min(60, Number(e.target.value) || 2)))} />
+        <input type="number" min={1} max={60} value={slots} disabled={!limit} aria-label="Plazas" inputMode="numeric"
+          onChange={(e) => setSlots(e.target.value === '' ? 0 : Math.min(60, Math.max(0, Math.floor(Number(e.target.value)) || 0)))}
+          onBlur={() => setSlots((v) => Math.max(1, v))} />
       </div>
       <div className="note" style={{ marginTop: 6 }}><span>Al llenarse el cupo, los siguientes que se apunten pasan a lista de espera automáticamente.</span></div>
+      {limit && slots > 0 && slots < MIN_PLAYERS && <div className="errtxt">Con {slots} plaza{slots === 1 ? '' : 's'} no se podrá crear el partido desde la encuesta (mínimo {MIN_PLAYERS} jugadores).</div>}
       <div className="sheet-actions"><button className="btn primary" disabled={!ok || busy} onClick={save}>Publicar en el chat</button></div>
     </SheetShell>
   );
 }
 
 /** Chat del grupo en tiempo real (Supabase Realtime) con encuestas de asistencia. */
-function ChatRoom({ groups, groupId, setGroupId, meId, call, flash, onOpenMatch, onCreateMatch }: {
+function ChatRoom({ groups, groupId, setGroupId, meId, call, flash, onOpenMatch, onCreateMatch, onRead }: {
   groups: Group[]; groupId: string; setGroupId: (id: string) => void; meId: string; call: Call; flash: (m: string) => void;
-  onOpenMatch: (id: string) => void; onCreateMatch: (p: Prefill) => void;
+  onOpenMatch: (id: string) => void; onCreateMatch: (p: Prefill) => void; onRead: (groupId: string) => void;
 }) {
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
   const [hasMore, setHasMore] = useState(false);
@@ -1297,14 +1626,25 @@ function ChatRoom({ groups, groupId, setGroupId, meId, call, flash, onOpenMatch,
   }, [call, setPoll]);
   const loadNames = useCallback(async () => {
     const l = await call<Player[]>(`/api/groups/${groupId}/players`).catch(() => [] as Player[]);
-    l.forEach((p) => names.current.set(p.id, { name: p.name, nick: p.nick }));
+    l.forEach((p) => names.current.set(p.id, { name: p.displayName ?? p.name, nick: p.nick }));
     setMsgs((prev) => prev.map((m) => (m.playerId && !m.authorName && names.current.has(m.playerId)
       ? { ...m, authorName: names.current.get(m.playerId)!.name, authorNick: names.current.get(m.playerId)!.nick } : m)));
   }, [call, groupId]);
 
+  // Leído: al abrir el chat y con cada mensaje nuevo mientras está abierto (badge a 0)
+  const onReadRef = useRef(onRead);
+  onReadRef.current = onRead;
+  const readTimer = useRef<ReturnType<typeof setTimeout> | null>(null);
+  const markRead = useCallback(() => {
+    if (readTimer.current) clearTimeout(readTimer.current);
+    readTimer.current = setTimeout(() => { if (groupId) onReadRef.current(groupId); }, 800);
+  }, [groupId]);
+  useEffect(() => () => { if (readTimer.current) clearTimeout(readTimer.current); }, []);
+
   // carga inicial
   useEffect(() => {
     if (!groupId) return;
+    markRead();
     let off = false;
     setLoading(true);
     setMsgs([]);
@@ -1336,7 +1676,10 @@ function ChatRoom({ groups, groupId, setGroupId, meId, call, flash, onOpenMatch,
             upsert(m);
             if (m.pollId) refreshPoll(m.pollId);
             if (m.playerId && !m.authorName) loadNames();
+            markRead();
           })
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'poll_guests', filter: `group_id=eq.${groupId}` },
+          (payload: { new: Record<string, unknown> }) => refreshPoll(String(payload.new.poll_id)))
         .on('postgres_changes', { event: '*', schema: 'public', table: 'poll_votes', filter: `group_id=eq.${groupId}` },
           (payload: { new: Record<string, unknown>; old: Record<string, unknown> }) => {
             const id = (payload.new?.poll_id ?? payload.old?.poll_id) as string | undefined;
@@ -1347,7 +1690,7 @@ function ChatRoom({ groups, groupId, setGroupId, meId, call, flash, onOpenMatch,
         .subscribe((st: string) => setLive(st === 'SUBSCRIBED'));
     })();
     return () => { active = false; setLive(false); if (ch) client.removeChannel(ch); };
-  }, [groupId, upsert, refreshPoll, loadNames]);
+  }, [groupId, upsert, refreshPoll, loadNames, markRead]);
 
   // scroll: abajo salvo que estés leyendo mensajes antiguos
   useEffect(() => {
@@ -1380,6 +1723,12 @@ function ChatRoom({ groups, groupId, setGroupId, meId, call, flash, onOpenMatch,
   };
   const vote = async (p: Poll, choice: Choice) => {
     try { setPoll(await call<Poll>(`/api/polls/${p.id}/vote`, 'POST', { choice })); } catch (e) { flash(msg(e)); }
+  };
+  const addGuest = async (p: Poll, g: GuestDraft) => {
+    try { setPoll(await call<Poll>(`/api/polls/${p.id}/guests`, 'POST', g)); } catch (e) { flash(msg(e)); }
+  };
+  const removeGuest = async (p: Poll, guestId: string) => {
+    try { setPoll(await call<Poll>(`/api/polls/${p.id}/guests/${guestId}`, 'DELETE')); } catch (e) { flash(msg(e)); }
   };
   const toggle = async (p: Poll) => {
     try { setPoll(await call<Poll>(`/api/polls/${p.id}/close`, 'POST', { reopen: p.status === 'closed' })); } catch (e) { flash(msg(e)); }
@@ -1426,10 +1775,17 @@ function ChatRoom({ groups, groupId, setGroupId, meId, call, flash, onOpenMatch,
                   <PollCard poll={m.poll} meId={meId} manage={manage}
                     onVote={(c) => vote(m.poll as Poll, c)}
                     onToggle={() => toggle(m.poll as Poll)}
+                    onAddGuest={(g) => addGuest(m.poll as Poll, g)}
+                    onRemoveGuest={(gid) => removeGuest(m.poll as Poll, gid)}
                     onOpenMatch={onOpenMatch}
                     onCreateMatch={() => {
                       const p = m.poll as Poll;
-                      onCreateMatch({ groupId, when: p.matchAt, playerIds: p.confirmed.map((u) => u.id), pollId: p.id, format: p.format });
+                      // Confirmados (sin lista de espera): miembros por id e invitados externos por nombre
+                      onCreateMatch({
+                        groupId, when: p.matchAt, pollId: p.id, format: p.format,
+                        playerIds: p.confirmed.filter((u) => !u.guest).map((u) => u.id),
+                        guests: p.confirmed.filter((u) => u.guest).map((u) => ({ name: u.name, stars: u.stars ?? 3, pos: u.pos })),
+                      });
                     }} />
                 ) : <div className="card note">Cargando encuesta…</div>
               ) : (
@@ -1495,10 +1851,10 @@ function SquadTab({ groups, groupId, setGroupId, call, flash, version, openPlaye
           ) : list.map((p) => {
             const inner = (
               <>
-                <Av name={p.name} />
+                <Av name={p.displayName ?? p.name} />
                 <span className="pname">
-                  <b>{p.name}</b>
-                  <small>{[p.nick || POS[p.pos].label, p.role !== 'member' ? ROLE_LABEL[p.role] : '', p.hasAccount ? '' : 'sin cuenta'].filter(Boolean).join(' · ')}</small>
+                  <b>{p.displayName ?? p.name}</b>
+                  <small>{[POS[p.pos].label, p.role !== 'member' ? ROLE_LABEL[p.role] : '', p.hasAccount ? '' : 'sin cuenta'].filter(Boolean).join(' · ')}</small>
                 </span>
                 <PosChip pos={p.pos} />
                 {manage ? <span><Stars v={p.stars} size={13} /></span> : <span />}
@@ -1506,7 +1862,7 @@ function SquadTab({ groups, groupId, setGroupId, call, flash, version, openPlaye
             );
             return manage ? (
               <button key={p.id} className="prow" onClick={() => openPlayer(
-                { id: p.id, name: p.name, nick: p.nick ?? '', pos: p.pos, stars: Math.min(5, Math.max(1, p.stars)), role: p.role, hasAccount: p.hasAccount },
+                { id: p.id, name: p.name, nick: p.nick ?? '', lastName: p.lastName ?? '', pos: p.pos, stars: Math.min(5, Math.max(1, p.stars)), role: p.role, hasAccount: p.hasAccount },
                 all.filter((x) => x.hasAccount && x.id !== p.id)
               )}>{inner}</button>
             ) : <div key={p.id} className="prow">{inner}</div>;
@@ -1626,6 +1982,10 @@ function Main({ onLogout, startGroupId }: { onLogout: () => void; startGroupId?:
   const [sheet, setSheet] = useState<SheetState>(null);
   const [groupId, setGroupIdState] = useState(startGroupId ?? '');
   const [version, setVersion] = useState(0);
+  const [notifs, setNotifs] = useState<Notif[]>([]);
+  const [unreadNotifs, setUnreadNotifs] = useState(0);
+  const [bellOpen, setBellOpen] = useState(false);
+  const [freshIds, setFreshIds] = useState<string[]>([]); // partidos nuevos/modificados que se están viendo ahora
 
   // El grupo elegido se recuerda en este navegador y es el mismo en Chat, Plantilla y Estadísticas.
   const setGroupId = useCallback((id: string) => {
@@ -1670,6 +2030,77 @@ function Main({ onLogout, startGroupId }: { onLogout: () => void; startGroupId?:
     if (!groups.length && groupId) setGroupIdState('');
   }, [groups, groupId, loaded, setGroupId]);
 
+  /* ---------- avisos: campana, mensajes sin leer y partidos nuevos ---------- */
+  const loadNotifs = useCallback(() => {
+    call<{ items: Notif[]; unread: number }>('/api/notifications').then((r) => { setNotifs(r.items); setUnreadNotifs(r.unread); }).catch(() => undefined);
+  }, [call]);
+  useEffect(() => { loadNotifs(); }, [loadNotifs]);
+
+  const markChatRead = useCallback((gid: string) => {
+    setGroups((l) => l.map((g) => (g.id === gid ? { ...g, unreadChat: 0 } : g)));
+    call(`/api/groups/${gid}/read`, 'POST', { what: 'chat' }).catch(() => undefined);
+  }, [call]);
+
+  // Al entrar en Partidos: se marcan como vistos, pero la etiqueta "Nuevo" se mantiene mientras sigas aquí
+  const anyNewMatches = groups.some((g) => g.newMatches > 0);
+  useEffect(() => {
+    if (tab !== 'matches' || view || !loaded) { if (tab !== 'matches') setFreshIds([]); return; }
+    if (!anyNewMatches) return;
+    setFreshIds((f) => [...new Set([...f, ...pending.filter((m) => m.isNew).map((m) => m.id)])]);
+    setGroups((l) => l.map((g) => ({ ...g, newMatches: 0 })));
+    call('/api/matches/seen', 'POST', {}).catch(() => undefined);
+  }, [tab, view, loaded, anyNewMatches, pending, call]);
+
+  // Tiempo real de toda la app: mensajes de todos mis grupos (badges) y mis notificaciones (campana)
+  const live = useRef({ tab, groupId, view });
+  live.current = { tab, groupId, view };
+  const groupIds = groups.map((g) => g.id).sort().join(',');
+  useEffect(() => {
+    if (!me || !groupIds) return;
+    const client = sb();
+    let ch: ReturnType<typeof client.channel> | null = null;
+    let active = true;
+    (async () => {
+      const { data } = await client.auth.getSession();
+      if (!active) return;
+      if (data.session) client.realtime.setAuth(data.session.access_token);
+      ch = client
+        .channel(`app-${me.id}`)
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'chat_messages', filter: `group_id=in.(${groupIds})` },
+          (payload: { new: Record<string, unknown> }) => {
+            const r = payload.new;
+            const gid = String(r.group_id);
+            const meta = (r.metadata ?? {}) as { event?: string };
+            if (meta.event === 'match_created' || meta.event === 'match_updated') refresh();
+            if (r.player_id === me.id) return;
+            const v = live.current;
+            if (v.tab === 'chat' && !v.view && v.groupId === gid) return; // lo estás viendo
+            setGroups((l) => l.map((g) => (g.id === gid ? { ...g, unreadChat: g.unreadChat + 1 } : g)));
+          })
+        .on('postgres_changes', { event: 'INSERT', schema: 'public', table: 'notifications', filter: `player_id=eq.${me.id}` },
+          () => loadNotifs())
+        .subscribe();
+    })();
+    return () => { active = false; if (ch) client.removeChannel(ch); };
+  }, [me, groupIds, refresh, loadNotifs]);
+
+  const openNotif = (n: Notif) => {
+    setBellOpen(false);
+    if (!n.readAt) {
+      setNotifs((l) => l.map((x) => (x.id === n.id ? { ...x, readAt: new Date().toISOString() } : x)));
+      setUnreadNotifs((u) => Math.max(0, u - 1));
+      call('/api/notifications/read', 'POST', { ids: [n.id] }).catch(() => undefined);
+    }
+    if (n.data?.matchId) setView({ t: 'match', id: n.data.matchId });
+    else if (n.groupId) { setGroupId(n.groupId); setView(null); setTab('chat'); }
+  };
+  const readAll = () => {
+    setNotifs((l) => l.map((x) => ({ ...x, readAt: x.readAt ?? new Date().toISOString() })));
+    setUnreadNotifs(0);
+    call('/api/notifications/read', 'POST', { all: true }).catch(() => undefined);
+  };
+  const unreadChatTotal = groups.reduce((a, g) => a + (g.unreadChat || 0), 0);
+
   const managed = groups.filter((g) => isManager(g.role));
   const managedIds = new Set(managed.map((g) => g.id));
   const toResult = history.filter((h) => h.needsResult && managedIds.has(h.groupId));
@@ -1687,7 +2118,13 @@ function Main({ onLogout, startGroupId }: { onLogout: () => void; startGroupId?:
   };
 
   let screen: ReactNode;
-  if (view && view.t === 'new') {
+  if (view && view.t === 'edit') {
+    screen = (
+      <MatchEditor key={view.id} id={view.id} call={call} flash={flash}
+        onClose={() => setView({ t: 'match', id: view.id })}
+        onSaved={() => { setView({ t: 'match', id: view.id }); refresh(); }} />
+    );
+  } else if (view && view.t === 'new') {
     screen = (
       <NewMatch groups={managed} prefill={view.prefill} call={call} flash={flash} onClose={() => setView(null)}
         onCreated={(id) => { setView({ t: 'match', id, pack: true }); setTab('matches'); refresh(); }} />
@@ -1697,26 +2134,44 @@ function Main({ onLogout, startGroupId }: { onLogout: () => void; startGroupId?:
       <MatchView key={view.id} id={view.id} startPack={!!view.pack} call={call} flash={flash}
         onBack={() => { setView(null); refresh(); }} onChanged={refresh}
         openText={(text) => setSheet({ t: 'text', text })}
-        openResult={(info) => setSheet({ t: 'result', ...info })} />
+        openResult={(info) => setSheet({ t: 'result', ...info })}
+        onEdit={() => setView({ t: 'edit', id: view.id })} />
     );
   } else {
     const withGroup = tab === 'squad' || tab === 'stats' || tab === 'chat';
     const eyebrow = withGroup && current ? `Equilibrio FC · ${current.name}` : 'Equilibrio FC';
-    const right = tab === 'squad' && isManager(current?.role) ? (
-      <button className="btn primary sm" onClick={() => setSheet({ t: 'player', init: { name: '', nick: '', pos: 'DEF', stars: 3 }, accounts: [] })}><Icon n="plus" /> Jugador</button>
-    ) : tab === 'matches' ? (
-      <button className="iconbtn" onClick={() => setSheet({ t: 'profile' })} aria-label="Mi perfil"><Icon n="user" /></button>
-    ) : undefined;
+    const bell = (
+      <button className="iconbtn bellbtn" onClick={() => setBellOpen(true)} aria-label={`Avisos${unreadNotifs ? ` (${unreadNotifs} sin leer)` : ''}`}>
+        <Icon n="bell" />{unreadNotifs > 0 && <span className="dot">{badgeTxt(unreadNotifs)}</span>}
+      </button>
+    );
+    const right = (
+      <span className="hdr-actions">
+        {tab === 'squad' && isManager(current?.role) && (
+          <button className="btn primary sm" onClick={() => setSheet({ t: 'player', init: { name: '', nick: '', lastName: '', pos: 'DEF', stars: 3 }, accounts: [] })}><Icon n="plus" /> Jugador</button>
+        )}
+        {bell}
+        {tab === 'matches' && <button className="iconbtn" onClick={() => setSheet({ t: 'profile' })} aria-label="Mi perfil"><Icon n="user" /></button>}
+      </span>
+    );
     screen = (
       <>
         <Hdr eyebrow={eyebrow} title={TITLES[tab]} right={right} />
         {tab === 'chat' ? (
           <ChatRoom groups={groups} groupId={groupId} setGroupId={setGroupId} meId={me?.id ?? ''} call={call} flash={flash}
             onOpenMatch={(id) => setView({ t: 'match', id })}
-            onCreateMatch={(prefill) => setView({ t: 'new', prefill })} />
+            onCreateMatch={(prefill) => setView({ t: 'new', prefill })}
+            onRead={markChatRead} />
         ) : (
           <main className="main" key={tab}>
             {error && <div className="alert err">No se pudo conectar con el servidor: {error}</div>}
+            {me && !me.nick && !me.lastName && (
+              <div className="alert">
+                <b>Completa tu perfil: añade un apodo o tu apellido</b>
+                <span>Así nadie se confunde contigo en las convocatorias (p. ej. “{me.name} M.”).</span>
+                <button className="btn primary sm" style={{ alignSelf: 'flex-start' }} onClick={() => setSheet({ t: 'profile' })}>Completar perfil</button>
+              </div>
+            )}
             {toResult.length > 0 && tab !== 'history' && (
               <div className="alert">
                 <b>El partido ya se ha jugado. ¡Vota al MVP y registra el resultado!</b>
@@ -1735,7 +2190,8 @@ function Main({ onLogout, startGroupId }: { onLogout: () => void; startGroupId?:
                 {!loaded ? <div className="empty">Cargando…</div> : pending.length === 0 ? (
                   <div className="empty">No hay partidos próximos. Convoca con una encuesta en el Chat o crea uno directamente.</div>
                 ) : pending.map((m) => (
-                  <MatchCard key={m.id} m={m} count={m.playersCount} right={<Icon n="chev" />} onOpen={() => setView({ t: 'match', id: m.id })} />
+                  <MatchCard key={m.id} m={m} count={m.playersCount} fresh={!!m.isNew || freshIds.includes(m.id)}
+                    right={<Icon n="chev" />} onOpen={() => setView({ t: 'match', id: m.id })} />
                 ))}
               </>
             )}
@@ -1762,8 +2218,12 @@ function Main({ onLogout, startGroupId }: { onLogout: () => void; startGroupId?:
         )}
         <nav className="nav n5" aria-label="Secciones">
           {(['matches', 'chat', 'history', 'squad', 'stats'] as Tab[]).map((k) => (
-            <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)} aria-label={TITLES[k]}>
-              <Icon n={k} />{TITLES[k]}{k === 'history' && toResult.length > 0 && <span className="dot">{toResult.length}</span>}
+            <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}
+              aria-label={`${TITLES[k]}${k === 'chat' && unreadChatTotal ? ` (${unreadChatTotal} sin leer)` : ''}`}>
+              <Icon n={k} />{TITLES[k]}
+              {k === 'history' && toResult.length > 0 && <span className="dot">{toResult.length}</span>}
+              {k === 'chat' && unreadChatTotal > 0 && <span className="dot">{badgeTxt(unreadChatTotal)}</span>}
+              {k === 'matches' && anyNewMatches && tab !== 'matches' && <span className="dot new" aria-label="Partidos nuevos" />}
             </button>
           ))}
         </nav>
@@ -1793,6 +2253,24 @@ function Main({ onLogout, startGroupId }: { onLogout: () => void; startGroupId?:
         <DeleteGroupSheet group={current} call={call} flash={flash} onClose={() => setSheet(null)}
           onDone={() => { setSheet(null); setGroupIdState(''); bump(); }} />
       )}
+      {bellOpen && (
+        <SheetShell title="Avisos" onClose={() => setBellOpen(false)}>
+          {notifs.length === 0 ? <div className="empty">No tienes avisos todavía.</div> : (
+            <>
+              {unreadNotifs > 0 && <button className="btn ghost sm" style={{ alignSelf: 'flex-end' }} onClick={readAll}>Marcar todas como leídas</button>}
+              <div className="notiflist">
+                {notifs.map((n) => (
+                  <button key={n.id} className={`notif${n.readAt ? '' : ' unread'}`} onClick={() => openNotif(n)}>
+                    <b>{n.title}</b>
+                    {n.body && <span>{n.body}</span>}
+                    <small>{n.groupName ? `${n.groupName} · ` : ''}{cap1(fmtD(n.createdAt, { weekday: 'short', day: 'numeric', month: 'short' }))} · {hhmm(n.createdAt)}</small>
+                  </button>
+                ))}
+              </div>
+            </>
+          )}
+        </SheetShell>
+      )}
       {sheet && sheet.t === 'text' && <TextSheet text={sheet.text} onClose={() => setSheet(null)} />}
       {sheet && sheet.t === 'result' && <ResultSheet s={sheet} call={call} flash={flash} onClose={() => setSheet(null)} />}
       <div className={`toast${toastMsg ? ' show' : ''}`} role="status">{toastMsg}</div>
@@ -1817,55 +2295,73 @@ export default function App({ inviteToken }: { inviteToken?: string }) {
   const [session, setSession] = useState<Session | null>(null);
   const [ready, setReady] = useState(false);
   const [fatal, setFatal] = useState('');
+  // Invitación: la de la URL (/join/<token>) o una pendiente de confirmar el email (guardada en este navegador)
+  const [token, setToken] = useState<string | null>(inviteToken ?? null);
   const [invite, setInvite] = useState<InvitePreview | null>(null);
   const [inviteErr, setInviteErr] = useState('');
   const [joining, setJoining] = useState(!!inviteToken);
   const [joinedGroup, setJoinedGroup] = useState<string | null>(null);
+  const [checkEmail, setCheckEmail] = useState<string | null>(null);
+
+  useEffect(() => {
+    if (inviteToken) return;
+    try {
+      const pending = localStorage.getItem(PENDING_INVITE);
+      if (pending) { setToken(pending); setJoining(true); }
+    } catch { /* sin almacenamiento */ }
+  }, [inviteToken]);
 
   useEffect(() => {
     let client: ReturnType<typeof sb> | null = null;
     try { client = sb(); } catch (e) { setFatal(msg(e)); }
     if (!client) { setReady(true); return; }
     client.auth.getSession().then(({ data }) => { setSession(data.session); setReady(true); });
-    const { data } = client.auth.onAuthStateChange((_event, s) => setSession(s));
+    const { data } = client.auth.onAuthStateChange((_event, s) => { setSession(s); if (s) setCheckEmail(null); });
     return () => data.subscription.unsubscribe();
   }, []);
 
   useEffect(() => {
-    if (!inviteToken) return;
-    fetch(`/api/invites/${inviteToken}`)
+    if (!token) return;
+    fetch(`/api/invites/${token}`)
       .then(async (r) => {
         const d = await r.json().catch(() => ({}));
         if (!r.ok) throw new Error((d as { error?: string }).error ?? 'Invitación no válida');
         setInvite(d as InvitePreview);
       })
       .catch((e) => setInviteErr(msg(e)));
-  }, [inviteToken]);
+  }, [token]);
 
   // Con sesión iniciada, la invitación se acepta sola y se abre el grupo.
   useEffect(() => {
-    if (!inviteToken || !session) return;
-    api<{ groupId: string }>(`/api/invites/${inviteToken}/accept`, 'POST')
-      .then((r) => { setJoinedGroup(r.groupId); window.history.replaceState(null, '', '/'); })
-      .catch((e) => setInviteErr(msg(e)))
+    if (!token || !session) return;
+    const clear = () => { try { localStorage.removeItem(PENDING_INVITE); } catch { /* nada */ } };
+    api<{ groupId: string }>(`/api/invites/${token}/accept`, 'POST')
+      .then((r) => { setJoinedGroup(r.groupId); clear(); window.history.replaceState(null, '', '/'); })
+      .catch((e) => { setInviteErr(msg(e)); if (!(e instanceof AuthError)) clear(); })
       .finally(() => setJoining(false));
-  }, [inviteToken, session]);
+  }, [token, session]);
 
   const logout = useCallback(() => { sb().auth.signOut(); }, []);
+  const onCheckEmail = (email: string) => {
+    // Si venía de una invitación, se guarda para terminar de unirse al confirmar el email
+    if (token) { try { localStorage.setItem(PENDING_INVITE, token); } catch { /* nada */ } }
+    setCheckEmail(email);
+  };
 
   if (!ready) return null;
   if (fatal) return <Splash title="Configuración"><div className="alert err">{fatal}</div></Splash>;
 
   const inviteProblem = inviteErr || (invite?.expired ? 'Este enlace de invitación ha caducado. Pide uno nuevo al admin del grupo.' : '');
-  if (inviteToken && inviteProblem) {
+  if (token && inviteProblem) {
     return (
       <Splash title="Invitación">
         <div className="alert err">{inviteProblem}</div>
-        <a className="btn block" href="/">Ir a la app</a>
+        <a className="btn block" href="/" onClick={() => { try { localStorage.removeItem(PENDING_INVITE); } catch { /* nada */ } }}>Ir a la app</a>
       </Splash>
     );
   }
-  if (!session) return <AuthScreen invite={invite} />;
-  if (inviteToken && joining) return <Splash title="Entrando…"><div className="empty">Uniéndote a {invite?.name ?? 'el grupo'}…</div></Splash>;
+  if (!session && checkEmail) return <CheckEmail email={checkEmail} invite={token ? invite : null} onBack={() => setCheckEmail(null)} />;
+  if (!session) return <AuthScreen invite={token ? invite : null} onCheckEmail={onCheckEmail} />;
+  if (token && joining) return <Splash title="Entrando…"><div className="empty">Uniéndote a {invite?.name ?? 'el grupo'}…</div></Splash>;
   return <Main key={session.user.id} startGroupId={joinedGroup} onLogout={logout} />;
 }

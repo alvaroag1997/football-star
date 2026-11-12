@@ -40,7 +40,7 @@ export async function requireUser(req: Request): Promise<Me> {
   if (!token) throw new HttpError(401, 'No autenticado');
   const user = await verifyToken(token);
 
-  const { rows } = await pool.query('SELECT id, name, email FROM players WHERE auth_user_id = $1', [user.id]);
+  const { rows } = await pool.query('SELECT id, display_name AS name, email FROM players WHERE auth_user_id = $1', [user.id]);
   if (rows.length) return { playerId: rows[0].id, authId: user.id, email: rows[0].email ?? user.email ?? null, name: rows[0].name };
   return ensureProfile(user);
 }
@@ -64,13 +64,16 @@ async function ensureProfile(user: AuthUser): Promise<Me> {
       : { rows: [] as any[] };
     const admin = legacy.rows[0];
 
-    const metaName = typeof user.user_metadata?.name === 'string' ? (user.user_metadata.name as string).trim() : '';
-    const name = (metaName || admin?.display_name || email?.split('@')[0] || 'Jugador').slice(0, 60);
+    const meta = (k: string) => (typeof user.user_metadata?.[k] === 'string' ? (user.user_metadata[k] as string).trim().slice(0, 60) : '');
+    const name = (meta('name') || admin?.display_name || email?.split('@')[0] || 'Jugador').slice(0, 60);
+    // v1.4: el registro pide apodo o apellido (nombre visible "Carlos M." / "Carlos 'El Mago'")
+    const nick = meta('nick') || null;
+    const lastName = meta('last_name') || null;
 
     const p = await c.query(
-      `INSERT INTO players (auth_user_id, email, name, pos, admin_id, push_token)
-       VALUES ($1, $2, $3, 'DEF', $4, $5) RETURNING id`,
-      [user.id, email, name, admin?.id ?? null, admin?.push_token ?? null]
+      `INSERT INTO players (auth_user_id, email, name, nick, last_name, pos, admin_id, push_token)
+       VALUES ($1, $2, $3, $4, $5, 'DEF', $6, $7) RETURNING id`,
+      [user.id, email, name, nick, lastName, admin?.id ?? null, admin?.push_token ?? null]
     );
     const playerId: string = p.rows[0].id;
 

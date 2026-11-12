@@ -1,10 +1,11 @@
 import { pool, tx } from '@/lib/db';
 import { handle, readBody, HttpError } from '@/lib/http';
 import { requireUser } from '@/lib/auth';
-import { assertGroup, assertUuid, deactivateOrphans, parsePos } from '@/lib/queries';
+import { assertGroup, assertUniqueNames, assertUuid, deactivateOrphans, parsePos } from '@/lib/queries';
 
-// Editar un jugador (admin o co-admin): estrellas (en este grupo), apodo y posición.
-// El nombre solo se puede cambiar en jugadores manuales: los que tienen cuenta lo cambian en su perfil.
+// Editar un jugador (admin o co-admin): estrellas (en este grupo) y posición.
+// Nombre, apodo y apellido solo en jugadores manuales: los que tienen cuenta los cambian en su perfil.
+// El nombre visible resultante no puede repetirse dentro del grupo.
 // Los partidos pasados NO cambian: guardan su snapshot.
 export const PATCH = handle(async (req, { params }) => {
   const me = await requireUser(req);
@@ -27,18 +28,23 @@ export const PATCH = handle(async (req, { params }) => {
       if (!Number.isFinite(stars) || stars < 0 || stars > 10) throw new HttpError(400, 'stars debe estar entre 0 y 10');
       await c.query('UPDATE group_players SET stars = $3 WHERE group_id = $1 AND player_id = $2', [groupId, playerId, stars]);
     }
-    if (b.name !== undefined || b.nick !== undefined || b.pos !== undefined) {
+    if (b.name !== undefined || b.nick !== undefined || b.lastName !== undefined || b.pos !== undefined) {
       if (b.name !== undefined && (typeof b.name !== 'string' || !b.name.trim())) throw new HttpError(400, 'name no puede estar vacío');
-      const name = b.name === undefined || hasAccount ? null : b.name.trim(); // con cuenta: el nombre es suyo
-      const nick = b.nick === undefined ? undefined : typeof b.nick === 'string' && b.nick.trim() ? b.nick.trim() : null;
+      const txt = (v: unknown) => (v === undefined || hasAccount ? undefined : typeof v === 'string' && v.trim() ? v.trim() : null);
+      const name = b.name === undefined || hasAccount ? null : b.name.trim(); // con cuenta: la identidad es suya
+      const nick = txt(b.nick);
+      const lastName = txt(b.lastName);
       await c.query(
         `UPDATE players SET
-           name = COALESCE($2, name),
-           nick = CASE WHEN $3::boolean THEN $4 ELSE nick END,
-           pos  = COALESCE($5, pos)
+           name      = COALESCE($2, name),
+           nick      = CASE WHEN $3::boolean THEN $4 ELSE nick END,
+           last_name = CASE WHEN $5::boolean THEN $6 ELSE last_name END,
+           pos       = COALESCE($7, pos)
          WHERE id = $1`,
-        [playerId, name, nick !== undefined, nick ?? null, b.pos === undefined ? null : parsePos(b.pos)]
+        [playerId, name, nick !== undefined, nick ?? null, lastName !== undefined, lastName ?? null,
+         b.pos === undefined ? null : parsePos(b.pos)]
       );
+      await assertUniqueNames(c, playerId);
     }
   });
   return Response.json({ ok: true });

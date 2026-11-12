@@ -6,7 +6,26 @@ export type Db = {
 };
 
 export type Pos = 'GK' | 'DEF' | 'ATT';
-export type Convocado = { id: string; name: string; photo: string | null; stars: number; pos: Pos; nick: string | null };
+export type Convocado = {
+  id: string; name: string; photo: string | null; stars: number; pos: Pos; nick: string | null; isGuest?: boolean;
+};
+export type GuestInput = { name: string; stars: number; pos: Pos };
+
+/** Mínimo de jugadores (convocados + invitados) para crear un partido: 5 contra 5. */
+export const MIN_PLAYERS = 10;
+
+/** Valida un invitado externo { name, stars?, pos? }. Estrellas 1-5 (por defecto 3). */
+export function parseGuest(v: any): GuestInput {
+  const name = typeof v?.name === 'string' ? v.name.trim() : '';
+  if (!name || name.length > 60) throw new HttpError(400, 'El invitado necesita un nombre (máx. 60 caracteres)');
+  const stars = v?.stars === undefined || v?.stars === null ? 3 : Number(v.stars);
+  if (!Number.isFinite(stars) || stars < 1 || stars > 5) throw new HttpError(400, 'Las estrellas del invitado van de 1 a 5');
+  return { name, stars: Math.round(stars * 2) / 2, pos: parsePos(v?.pos) };
+}
+
+/** Id temporal de un invitado dentro del algoritmo de reparto (en BD se guarda con player_id NULL). */
+export const guestKey = (i: number) => `guest:${i}`;
+export const isGuestKey = (id: string) => id.startsWith('guest:');
 
 const STARTERS: Record<string, number> = { '5v5': 5, '7v7': 7, '11v11': 11 };
 
@@ -61,6 +80,29 @@ export async function deactivateOrphans(db: Db, playerIds: string[]) {
   return Number(r.rows[0]?.n ?? 0);
 }
 
+/**
+ * Evita confusiones en las convocatorias: dentro de un mismo grupo no puede haber dos miembros
+ * con el mismo nombre visible ("Carlos M.", "Carlos 'El Mago'"). Se llama DESPUÉS de escribir
+ * (dentro de la transacción), así display_name ya está recalculado y si falla se deshace todo.
+ */
+export async function assertUniqueNames(db: Db, playerId: string, groupId?: string) {
+  const r = await db.query(
+    `SELECT g.name AS "group", p.display_name AS "display"
+       FROM group_players me
+       JOIN players mp ON mp.id = me.player_id
+       JOIN groups g ON g.id = me.group_id AND g.is_active
+       JOIN group_players o ON o.group_id = me.group_id AND o.is_active AND o.player_id <> me.player_id
+       JOIN players p ON p.id = o.player_id AND p.is_active
+      WHERE me.player_id = $1 AND me.is_active AND ($2::uuid IS NULL OR me.group_id = $2)
+        AND lower(p.display_name) = lower(mp.display_name)
+      LIMIT 1`,
+    [playerId, groupId ?? null]
+  );
+  if (r.rowCount) {
+    throw new HttpError(409, `Ya hay un “${r.rows[0].display}” en ${r.rows[0].group}. Usa otro apodo o apellido para distinguiros.`);
+  }
+}
+
 /** Mensaje automático del sistema en el chat del grupo. */
 export async function systemMessage(db: Db, groupId: string, content: string, metadata: Record<string, unknown> = {}) {
   await db.query(
@@ -81,7 +123,7 @@ export async function loadConvocados(db: Db, groupId: string, playerIds: unknown
   if (unique.length !== playerIds.length) throw new HttpError(400, 'Hay jugadores duplicados');
 
   const { rows } = await db.query(
-    `SELECT p.id, p.name, p.photo_url AS photo, p.pos, p.nick, gp.stars::float8 AS stars
+    `SELECT p.id, p.display_name AS name, p.photo_url AS photo, p.pos, p.nick, gp.stars::float8 AS stars
        FROM group_players gp
        JOIN players p ON p.id = gp.player_id
       WHERE gp.group_id = $1 AND gp.is_active AND p.is_active
