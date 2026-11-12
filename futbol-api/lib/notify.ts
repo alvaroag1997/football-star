@@ -1,7 +1,7 @@
 import type { Db } from './queries';
 import { pushToPlayers } from './push';
 
-export type NotifType = 'chat' | 'poll' | 'match_created' | 'match_updated';
+export type NotifType = 'chat' | 'poll' | 'match_created' | 'match_updated' | 'member_joined' | 'quorum';
 
 /**
  * Avisos a los miembros de un grupo:
@@ -26,7 +26,9 @@ export async function notify(
   const ids = opts.recipients === 'members' ? null : opts.recipients;
   const { rows } = await db.query(
     `SELECT p.id,
-            CASE $4 WHEN 'chat' THEN p.notify_chat WHEN 'poll' THEN p.notify_polls ELSE p.notify_matches END AS "wantsPush"
+            CASE $4 WHEN 'chat' THEN p.notify_chat
+                    WHEN 'poll' THEN p.notify_polls WHEN 'member_joined' THEN p.notify_polls
+                    ELSE p.notify_matches END AS "wantsPush"
        FROM group_players gp JOIN players p ON p.id = gp.player_id
       WHERE gp.group_id = $1 AND gp.is_active AND p.is_active AND p.auth_user_id IS NOT NULL
         AND ($2::uuid[] IS NULL OR p.id = ANY($2::uuid[]))

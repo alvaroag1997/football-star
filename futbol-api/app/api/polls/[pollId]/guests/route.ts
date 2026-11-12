@@ -2,7 +2,7 @@ import { tx } from '@/lib/db';
 import { handle, readBody, HttpError } from '@/lib/http';
 import { requireUser } from '@/lib/auth';
 import { assertGroup, assertUuid, parseGuest } from '@/lib/queries';
-import { loadPoll } from '@/lib/polls';
+import { checkQuorum } from '@/lib/polls';
 
 // "+ Añadir invitado" a una encuesta abierta (solo admin / co-admin).
 // Body: { name, stars?: 1..5 (por defecto 3), pos?: 'GK' | 'DEF' | 'ATT' }
@@ -21,7 +21,7 @@ export const POST = handle(async (req, { params }) => {
       'INSERT INTO poll_guests (poll_id, group_id, name, stars, pos, added_by) VALUES ($1, $2, $3, $4, $5, $6)',
       [pollId, p.rows[0].group_id, guest.name, guest.stars, guest.pos, me.playerId]
     );
-    return loadPoll(c, pollId, me.playerId);
+    return checkQuorum(c, pollId, me.playerId);
   });
   return Response.json(poll, { status: 201 });
 });

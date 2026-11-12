@@ -202,3 +202,25 @@ resultado requieren ser owner o co-admin del grupo.
 | POST / DELETE | `/api/push/subscribe` | Guardar / quitar este dispositivo |
 | POST | `/api/push/test` | Notificación de prueba a tus dispositivos |
 | PATCH | `/api/me` | `notifyChat`, `notifyPolls`, `notifyMatches` |
+
+## Actualización v1.6 · Encuestas completas, quórum, fotos y nuevos desplegables
+
+### Pasos
+1. **Supabase → SQL Editor**: ejecuta `supabase/08_migracion_v1.6.sql` **antes de fusionar**. Crea el bucket
+   público `avatars` de Storage con sus políticas (cada uno solo sube a su carpeta; el escudo, solo admin y co-admins).
+2. Sin variables nuevas.
+
+### Qué hay de nuevo
+- **Resultado**: los marcadores se pueden borrar del todo (ya no obliga a escribir “01”), botones − / + y no deja
+  guardar si falta alguno (la API también lo rechaza).
+- **Encuestas solo para admin y co-admins** (botón oculto al resto; la API devuelve 403).
+- **Encuesta completa**: modalidad (cupo sugerido 10 / 14 / 22), lugar y notas/precio. Con “Crear Partido con
+  Confirmados” pasan solos al partido junto con la fecha, los confirmados y los invitados.
+- **Avisos nuevos**: “👋 X se ha unido al grupo” (por enlace o añadido por el admin) y “⚽ ¡Ya somos 10 para Fútbol
+  Sala!” al alcanzar el mínimo de la modalidad (10 / 14 / 22), una sola vez por encuesta (`polls.quorum_notified`).
+- **Fotos** (Supabase Storage): foto de perfil (Mi perfil) y escudo del grupo (Plantilla, admin/co-admin), con vista
+  previa circular; se recortan y comprimen a 400×400 en el móvil antes de subirlas. Sin foto: iniciales / escudo de color.
+- **Invitación compacta**: barra con el enlace, “Copiar” (→ “¡Copiado!”) y compartir (menú del móvil o WhatsApp).
+- **Desplegables propios** en lugar de los `<select>` del navegador (grupo, estrellas, MVP, jugador…) y control
+  segmentado con pastilla deslizante.
+- **Barra de progreso** en la encuesta hacia el mínimo de la modalidad; se pone verde al alcanzarlo.

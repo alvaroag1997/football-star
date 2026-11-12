@@ -9,6 +9,9 @@ export const POST = handle(async (req, { params }) => {
   const me = await requireUser(req);
   const { id } = await params;
   const b = await readBody(req);
+  // Los dos marcadores son obligatorios (un campo vacío NO cuenta como 0)
+  const empty = (v: unknown) => v === undefined || v === null || (typeof v === 'string' && v.trim() === '');
+  if (empty(b.scoreA) || empty(b.scoreB)) throw new HttpError(400, 'Falta el marcador de algún equipo');
   const scoreA = Number(b.scoreA);
   const scoreB = Number(b.scoreB);
   if (![scoreA, scoreB].every((n) => Number.isInteger(n) && n >= 0 && n <= 99)) {

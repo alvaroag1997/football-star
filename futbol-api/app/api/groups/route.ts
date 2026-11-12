@@ -7,7 +7,7 @@ import { requireUser } from '@/lib/auth';
 export const GET = handle(async (req) => {
   const me = await requireUser(req);
   const { rows } = await pool.query(
-    `SELECT g.id, g.name, gp.role,
+    `SELECT g.id, g.name, g.icon_url AS "iconUrl", gp.role,
             (SELECT count(*) FROM group_players x WHERE x.group_id = g.id AND x.is_active)::int AS players,
             (SELECT count(*) FROM chat_messages c
               WHERE c.group_id = g.id AND c.created_at > gp.last_read_chat_at

@@ -103,6 +103,20 @@ export async function assertUniqueNames(db: Db, playerId: string, groupId?: stri
   }
 }
 
+/**
+ * Valida una URL de foto subida a Supabase Storage (bucket público "avatars") dentro de la carpeta
+ * permitida: users/<id de la cuenta>/ o groups/<id del grupo>/. null = quitar la foto.
+ */
+export function storageUrl(v: unknown, folder: string): string | null {
+  if (v === null || v === '') return null;
+  const base = (process.env.NEXT_PUBLIC_SUPABASE_URL || '').replace(/\/$/, '');
+  const prefix = `${base}/storage/v1/object/public/avatars/${folder}/`;
+  if (typeof v !== 'string' || !base || !v.startsWith(prefix) || v.length > 500) {
+    throw new HttpError(400, 'La foto no es válida');
+  }
+  return v;
+}
+
 /** Mensaje automático del sistema en el chat del grupo. */
 export async function systemMessage(db: Db, groupId: string, content: string, metadata: Record<string, unknown> = {}) {
   await db.query(
