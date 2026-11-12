@@ -224,3 +224,14 @@ resultado requieren ser owner o co-admin del grupo.
 - **Desplegables propios** en lugar de los `<select>` del navegador (grupo, estrellas, MVP, jugador…) y control
   segmentado con pastilla deslizante.
 - **Barra de progreso** en la encuesta hacia el mínimo de la modalidad; se pone verde al alcanzarlo.
+
+## v1.7 · Limpieza visual y navegación
+
+Sin cambios de base de datos ni variables nuevas: solo interfaz.
+
+- **Barra inferior de 4 pestañas**: Partidos (Próximos / Historial), Chat, Plantilla (Jugadores / Estadísticas) y Perfil.
+- **Cabecera mínima**: selector del grupo activo con su escudo a la izquierda y campana a la derecha.
+- **Perfil** como pestaña propia: foto, nombre, apellido/apodo (obligatorio uno), posición, nivel, tema Oscuro/Claro, notificaciones y cerrar sesión.
+- **Plantilla depurada**: buscador, filtros, invitación compacta; el escudo y el nombre se editan en ⋯ → *Editar grupo* (junto con salir / eliminar).
+- **Modo claro** (se recuerda por dispositivo, sin parpadeo al cargar).
+- Esqueletos de carga, estados vacíos con una acción, toasts arriba (2,5 s) y respuesta táctil al pulsar.
