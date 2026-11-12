@@ -72,7 +72,7 @@ type HistRow = {
 };
 type StatRow = { playerId: string; name: string; nick: string | null; pos: Pos; stars: number; pj: number; w: number; mvp: number };
 type Call = <T>(path: string, method?: string, body?: unknown) => Promise<T>;
-type Tab = 'matches' | 'chat' | 'history' | 'squad' | 'stats';
+type Tab = 'matches' | 'chat' | 'squad' | 'profile';
 type View = null | { t: 'new'; prefill?: Prefill } | { t: 'match'; id: string; pack?: boolean } | { t: 'edit'; id: string };
 type PlayerInit = { id?: string; name: string; nick: string; lastName: string; pos: Pos; stars: number; role?: Role; hasAccount?: boolean };
 type SheetState =
@@ -81,7 +81,7 @@ type SheetState =
   | { t: 'text'; text: string }
   | { t: 'group' }
   | { t: 'existing' }
-  | { t: 'profile' }
+  | { t: 'groupSettings' }
   | { t: 'deleteGroup' }
   | { t: 'result'; id: string; title: string; roster: Entry[]; scoreA: number | null; scoreB: number | null; mvp: string | null; onSaved: () => void };
 
@@ -208,6 +208,13 @@ const IC: Record<string, string> = {
   share: '<circle cx="18" cy="5.5" r="2.5"/><circle cx="6" cy="12" r="2.5"/><circle cx="18" cy="18.5" r="2.5"/><path d="M8.2 10.8l7.6-4M8.2 13.2l7.6 4"/>',
   camera: '<path d="M4 8h3l2-2.5h6L17 8h3v11H4z"/><circle cx="12" cy="13" r="3.5"/>',
   chevd: '<path d="M6 9l6 6 6-6"/>',
+  profile: '<circle cx="12" cy="8" r="4"/><path d="M4 21c.8-4.2 3.9-6.5 8-6.5s7.2 2.3 8 6.5"/>',
+  search: '<circle cx="11" cy="11" r="6.5"/><path d="M20 20l-4.2-4.2"/>',
+  more: '<g fill="currentColor" stroke="none"><circle cx="5.5" cy="12" r="1.8"/><circle cx="12" cy="12" r="1.8"/><circle cx="18.5" cy="12" r="1.8"/></g>',
+  sun: '<circle cx="12" cy="12" r="4"/><path d="M12 2.5v2M12 19.5v2M4.6 4.6l1.4 1.4M18 18l1.4 1.4M2.5 12h2M19.5 12h2M4.6 19.4L6 18M18 6l1.4-1.4"/>',
+  moon: '<path d="M20 14.5A8 8 0 019.5 4a8 8 0 1010.5 10.5z"/>',
+  logout: '<path d="M14 4h4a2 2 0 012 2v12a2 2 0 01-2 2h-4"/><path d="M10 16l-4-4 4-4M6 12h10"/>',
+  ball: '<circle cx="12" cy="12" r="9"/><path d="M12 7.5l4 2.9-1.5 4.7h-5L8 10.4z"/><path d="M12 3v4.5M16 10.4l4.3-1.4M14.5 15.1l2.6 3.7M9.5 15.1l-2.6 3.7M8 10.4L3.7 9"/>',
 };
 function Icon({ n }: { n: string }) {
   return (
@@ -265,9 +272,9 @@ type PickOpt = { value: string; label: string; sub?: string; badge?: string; ico
  * Sustituye a los <select> del navegador: botón + hoja inferior animada con la opción activa
  * marcada. Se cierra al tocar fuera, con la X o con Escape.
  */
-function Picker({ value, options, onChange, title, subtitle, placeholder = 'Elige…', id, footer, big, disabled }: {
+function Picker({ value, options, onChange, title, subtitle, placeholder = 'Elige…', id, footer, big, hdr, disabled }: {
   value: string; options: PickOpt[]; onChange: (v: string) => void; title: string; subtitle?: string;
-  placeholder?: string; id?: string; footer?: ReactNode; big?: boolean; disabled?: boolean;
+  placeholder?: string; id?: string; footer?: ReactNode; big?: boolean; hdr?: boolean; disabled?: boolean;
 }) {
   const [open, setOpen] = useState(false);
   const [closing, setClosing] = useState(false);
@@ -285,12 +292,12 @@ function Picker({ value, options, onChange, title, subtitle, placeholder = 'Elig
 
   return (
     <>
-      <button type="button" id={id} className={`picker${big ? ' big' : ''}`} disabled={disabled} aria-haspopup="listbox" aria-expanded={open}
+      <button type="button" id={id} className={`picker${big ? ' big' : ''}${hdr ? ' hdrpick' : ''}`} disabled={disabled} aria-haspopup="listbox" aria-expanded={open}
         onClick={() => setOpen(true)}>
         {cur?.icon}
         <span className="pk-txt">
           <b>{cur ? cur.label : placeholder}{cur?.badge && <span className="chip ok">{cur.badge}</span>}</b>
-          {cur?.sub && <small>{cur.sub}</small>}
+          {cur?.sub && !hdr && <small>{cur.sub}</small>}
         </span>
         <span className="pk-caret"><Icon n="chevd" /></span>
       </button>
@@ -466,16 +473,60 @@ const groupOpts = (groups: Group[]): PickOpt[] => groups.map((g) => ({
   sub: `${g.players} jugadores${g.unreadChat ? ` · ${badgeTxt(g.unreadChat)} sin leer` : ''}`,
 }));
 
-/** Selector de grupo (hoja inferior con escudos, rol y "Crear nuevo grupo"). */
-function GroupSelect({ groups, value, onChange, label = 'Grupo', onCreate }: {
-  groups: Group[]; value: string; onChange: (v: string) => void; label?: string; onCreate?: () => void;
-}) {
+/* ============================ v1.7 · piezas comunes ============================ */
+type Theme = 'dark' | 'light';
+const THEME_KEY = 'eqfc-theme';
+const readTheme = (): Theme => {
+  try { return localStorage.getItem(THEME_KEY) === 'light' ? 'light' : 'dark'; } catch { return 'dark'; }
+};
+/** Aplica el tema a toda la página (y al color de la barra del móvil) y lo recuerda en este dispositivo. */
+function applyTheme(t: Theme) {
+  document.documentElement.dataset.theme = t;
+  document.querySelector('meta[name="theme-color"]')?.setAttribute('content', t === 'light' ? '#f4f6f5' : '#080d0a');
+  try { localStorage.setItem(THEME_KEY, t); } catch { /* sin almacenamiento */ }
+}
+
+/** Esqueletos de carga con la forma de lo que va a aparecer. */
+function SkMatches({ n = 3 }: { n?: number }) {
   return (
-    <div className="gsel">
-      <div className="lbl">{label}</div>
-      <Picker big value={value} onChange={onChange} options={groupOpts(groups)} title="Cambiar de grupo"
-        subtitle="Selecciona el grupo activo o crea uno nuevo" placeholder={groups.length ? 'Elige un grupo…' : 'Sin grupos'}
-        footer={onCreate && <button className="btn primary block" onClick={onCreate}><Icon n="plus" /> Crear nuevo grupo</button>} />
+    <div className="sk-list" aria-busy="true" aria-label="Cargando">
+      {Array.from({ length: n }, (_, i) => (
+        <div className="card mcard sk-card" key={i}>
+          <span className="sk sk-box" />
+          <span className="minfo"><span className="sk sk-line w60" /><span className="sk sk-line w80 thin" /><span className="sk sk-line w40 thin" /></span>
+        </div>
+      ))}
+    </div>
+  );
+}
+function SkRows({ n = 6 }: { n?: number }) {
+  return (
+    <div className="card list sk-list" aria-busy="true" aria-label="Cargando">
+      {Array.from({ length: n }, (_, i) => (
+        <div className="sk-row" key={i}>
+          <span className="sk sk-av" />
+          <span className="minfo"><span className="sk sk-line w50" /><span className="sk sk-line w30 thin" /></span>
+        </div>
+      ))}
+    </div>
+  );
+}
+function SkChat() {
+  return (
+    <div className="sk-chat" aria-busy="true" aria-label="Cargando">
+      {[62, 44, 70, 38, 55].map((w, i) => <span key={i} className={`sk sk-bubble${i % 2 ? ' mine' : ''}`} style={{ width: w + '%' }} />)}
+    </div>
+  );
+}
+
+/** Estado vacío: icono sutil, una frase y (como mucho) una acción principal. */
+function Empty({ icon, title, text, action }: { icon: string; title: string; text?: string; action?: ReactNode }) {
+  return (
+    <div className="emptystate">
+      <span className="es-ico"><Icon n={icon} /></span>
+      <b>{title}</b>
+      {text && <span>{text}</span>}
+      {action}
     </div>
   );
 }
@@ -487,12 +538,11 @@ function MatchCard({ m, count, played, right, onOpen, fresh }: {
   const d = new Date(m.scheduledAt);
   const info = [m.groupName];
   if (count !== undefined) info.push(`${count} jugadores`);
-  if (!played && m.balanceStats) info.push(`diferencia ${f1(m.balanceStats.diffSum)}★`);
   return (
     <button className="card mcard" onClick={onOpen}>
       <span className="dbox"><b>{d.getDate()}</b><small>{fmtD(m.scheduledAt, { month: 'short' })}</small></span>
       <span className="minfo">
-        <span className="mtop"><b>{MOD[m.format]?.label ?? m.format}</b><span className="chip">{MOD[m.format]?.short ?? m.format}</span>{fresh && <span className="chip new">Nuevo</span>}</span>
+        <span className="mtop"><b>{MOD[m.format]?.label ?? m.format}</b>{fresh && <span className="chip new">Nuevo</span>}</span>
         <span className="mmeta">{cap1(fmtD(m.scheduledAt, { weekday: 'long' }))} · {hhmm(m.scheduledAt)} · {m.location || 'Sin lugar'}</span>
         <span className="mmeta">{info.join(' · ')}</span>
       </span>
@@ -601,12 +651,14 @@ function AuthScreen({ invite, onCheckEmail }: { invite?: InvitePreview | null; o
 /** Pantalla "Revisa tu correo" tras registrarse (con o sin invitación pendiente). */
 function CheckEmail({ email, invite, onBack }: { email: string; invite?: InvitePreview | null; onBack: () => void }) {
   const [sent, setSent] = useState(false);
+  const [err, setErr] = useState('');
   const resend = async () => {
+    setErr('');
     try {
       const { error } = await sb().auth.resend({ type: 'signup', email, options: { emailRedirectTo: window.location.href } });
       if (error) throw error;
       setSent(true);
-    } catch (e) { alert(msg(e)); }
+    } catch (e) { setErr(msg(e)); }
   };
   return (
     <div className="app">
@@ -632,6 +684,7 @@ function CheckEmail({ email, invite, onBack }: { email: string; invite?: InviteP
         <button className="btn ghost sm" style={{ alignSelf: 'center' }} disabled={sent} onClick={resend}>
           {sent ? 'Correo reenviado' : '¿No te llega? Reenviar correo'}
         </button>
+        {err && <span className="errtxt">{err}</span>}
       </main>
       <div className="foot"><button className="btn primary" onClick={onBack}>Volver a Entrar</button></div>
     </div>
@@ -1072,7 +1125,7 @@ function MatchView({ id, startPack, call, flash, onBack, onChanged, openText, op
   }
 
   if (!d) {
-    return (<><Hdr eyebrow="Equilibrio FC" title="Equipos" onBack={onBack} /><main className="main"><div className="empty">Cargando…</div></main></>);
+    return (<><Hdr eyebrow="Partido" title="Equipos" onBack={onBack} /><main className="main"><SkMatches n={1} /><SkRows n={5} /></main></>);
   }
 
   const A = d.roster.filter((r) => r.team === 'A');
@@ -1103,7 +1156,7 @@ function MatchView({ id, startPack, call, flash, onBack, onChanged, openText, op
 
   return (
     <>
-      <Hdr eyebrow={`Equilibrio FC · ${d.groupName}`} title="Equipos" onBack={onBack} />
+      <Hdr eyebrow={d.groupName} title="Equipos" onBack={onBack} />
       <main className="main">
         <div className="card minfo2">
           <b>{cap1(fmtD(d.scheduledAt, { weekday: 'long', day: 'numeric', month: 'long' }))} · {hhmm(d.scheduledAt)}</b>
@@ -1197,7 +1250,7 @@ function MatchEditor({ id, call, flash, onClose, onSaved }: {
     }).catch((e) => flash(msg(e)));
   }, [call, id, flash]);
 
-  if (!d) return (<><Hdr eyebrow="Editar partido" title="Cargando…" onBack={onClose} /><main className="main"><div className="empty">Cargando…</div></main></>);
+  if (!d) return (<><Hdr eyebrow="Editar partido" title="Editar partido" onBack={onClose} /><main className="main"><SkRows n={6} /></main></>);
 
   const per = MOD[mod].n;
   const inTeam = (t: 'A' | 'B') => rows.filter((r) => r.team === t);
@@ -1360,8 +1413,8 @@ function PushSettings({ me, call, flash, onSaved }: { me: Me; call: Call; flash:
   };
 
   return (
-    <div className="card form" style={{ marginTop: 10 }}>
-      <div className="lbl"><Icon n="bell" /> Notificaciones en el móvil</div>
+    <div className="card form">
+      <div className="lbl"><Icon n="bell" /> En este dispositivo</div>
       {state === null ? <span className="note">Comprobando…</span>
         : state === 'on' ? (
           <>
@@ -1578,7 +1631,7 @@ function ResultSheet({ s, call, flash, onClose }: {
     setBusy(true);
     try {
       await call(`/api/matches/${s.id}/result`, 'POST', { scoreA: Number(a), scoreB: Number(b), mvpEntryId: mvp || undefined });
-      flash('Resultado guardado ✅');
+      flash('Resultado guardado');
       s.onSaved();
       onClose();
     } catch (e) { flash(msg(e)); setBusy(false); }
@@ -1642,7 +1695,7 @@ function ExistingSheet({ groupId, call, flash, onClose, onDone }: {
   };
   return (
     <SheetShell title="Jugador de otro grupo" onClose={onClose}>
-      {all === null ? <div className="note">Cargando…</div> : all.length === 0 ? (
+      {all === null ? <SkRows n={3} /> : all.length === 0 ? (
         <div className="empty">No hay jugadores de tus otros grupos que añadir.</div>
       ) : (
         <>
@@ -1659,53 +1712,78 @@ function ExistingSheet({ groupId, call, flash, onClose, onDone }: {
   );
 }
 
-function ProfileSheet({ me, call, flash, onClose, onSaved, onUpdate, onLogout }: {
-  me: Me; call: Call; flash: (m: string) => void; onClose: () => void; onSaved: (m: Me) => void;
-  onUpdate: (m: Me) => void; onLogout: () => void;
+/** Pestaña Perfil: foto, nombre, apodo/apellido, posición, nivel, tema, notificaciones y cerrar sesión. */
+function ProfileView({ me, call, flash, onUpdate, onLogout, theme, onTheme }: {
+  me: Me; call: Call; flash: (m: string) => void; onUpdate: (m: Me) => void; onLogout: () => void;
+  theme: Theme; onTheme: (t: Theme) => void;
 }) {
-  const [s, setS] = useState({ name: me.name, nick: me.nick ?? '', lastName: me.lastName ?? '', pos: me.pos, level: me.level });
+  const initial = { name: me.name, nick: me.nick ?? '', lastName: me.lastName ?? '', pos: me.pos, level: me.level };
+  const [s, setS] = useState(initial);
   const [busy, setBusy] = useState(false);
   const [authId, setAuthId] = useState<string | null>(null); // carpeta de su foto: users/<id de la cuenta>
   useEffect(() => { sb().auth.getSession().then(({ data }) => setAuthId(data.session?.user.id ?? null)); }, []);
   const preview = s.nick.trim() ? `${s.name.trim()} '${s.nick.trim()}'` : s.lastName.trim() ? `${s.name.trim()} ${s.lastName.trim().charAt(0).toUpperCase()}.` : '';
+  const dirty = s.name !== me.name || s.nick !== (me.nick ?? '') || s.lastName !== (me.lastName ?? '') || s.pos !== me.pos || s.level !== me.level;
+  const valid = !!s.name.trim() && (!!s.nick.trim() || !!s.lastName.trim());
   const save = async () => {
     if (!s.name.trim()) { flash('Escribe tu nombre'); return; }
     if (!s.nick.trim() && !s.lastName.trim()) { flash('Pon un apodo o un apellido'); return; }
     setBusy(true);
     try {
       const m = await call<Me>('/api/me', 'PATCH', { name: s.name.trim(), nick: s.nick.trim(), lastName: s.lastName.trim(), pos: s.pos, level: s.level });
-      flash('Perfil guardado');
-      onSaved(m);
-    } catch (e) { flash(msg(e)); setBusy(false); }
+      onUpdate(m);
+      setS({ name: m.name, nick: m.nick ?? '', lastName: m.lastName ?? '', pos: m.pos, level: m.level });
+      flash('Perfil actualizado');
+    } catch (e) { flash(msg(e)); } finally { setBusy(false); }
   };
+
   return (
-    <SheetShell title="Mi perfil" onClose={onClose}>
-      <ImageUploader kind="user" name={me.displayName ?? me.name} current={me.photoUrl} folder={authId ? `users/${authId}` : null} flash={flash}
-        onSave={async (url) => onUpdate(await call<Me>('/api/me', 'PATCH', { photoUrl: url }))} />
-      <div className="note" style={{ marginBottom: 6 }}><Icon n="user" /><span>{me.email}</span></div>
-      <label htmlFor="m-name">Nombre</label>
-      <input id="m-name" value={s.name} maxLength={60} onChange={(e) => setS({ ...s, name: e.target.value })} />
-      <div className="two" style={{ marginTop: 6 }}>
-        <div><label htmlFor="m-last">Apellido</label><input id="m-last" value={s.lastName} maxLength={60} onChange={(e) => setS({ ...s, lastName: e.target.value })} /></div>
-        <div><label htmlFor="m-nick">Apodo</label><input id="m-nick" value={s.nick} maxLength={60} onChange={(e) => setS({ ...s, nick: e.target.value })} /></div>
+    <main className="main profile">
+      <section className="phero">
+        <ImageUploader kind="user" name={me.displayName ?? me.name} current={me.photoUrl} folder={authId ? `users/${authId}` : null} flash={flash}
+          onSave={async (url) => onUpdate(await call<Me>('/api/me', 'PATCH', { photoUrl: url }))} />
+        <div className="phero-txt"><b>{me.displayName ?? me.name}</b><small>{me.email}</small></div>
+      </section>
+
+      <h2 className="sec">Tus datos</h2>
+      <div className="card form">
+        <label htmlFor="m-name">Nombre</label>
+        <input id="m-name" value={s.name} maxLength={60} onChange={(e) => setS({ ...s, name: e.target.value })} />
+        <div className="two" style={{ marginTop: 6 }}>
+          <div><label htmlFor="m-last">Apellido</label><input id="m-last" value={s.lastName} maxLength={60} onChange={(e) => setS({ ...s, lastName: e.target.value })} /></div>
+          <div><label htmlFor="m-nick">Apodo</label><input id="m-nick" value={s.nick} maxLength={60} onChange={(e) => setS({ ...s, nick: e.target.value })} /></div>
+        </div>
+        {preview
+          ? <span className="note">En tus grupos te verán como <b>&nbsp;{preview}</b>{s.nick.trim() && s.lastName.trim() ? ' (manda el apodo)' : ''}</span>
+          : <span className="errtxt">Obligatorio: pon un apodo o un apellido para que no haya dos iguales en el grupo.</span>}
+        <div className="lbl" style={{ marginTop: 8 }}>Posición preferida</div>
+        <div className="seg">
+          {(['GK', 'DEF', 'ATT'] as Pos[]).map((k) => (
+            <button key={k} className={s.pos === k ? 'on' : ''} onClick={() => setS({ ...s, pos: k })}>{POS[k].label}</button>
+          ))}
+        </div>
+        <div className="lbl" style={{ marginTop: 8 }}>Tu nivel<span className="lockt">el admin de cada grupo puede ajustarlo</span></div>
+        <div className="starbox"><Stars v={s.level} size={30} onPick={(v) => setS({ ...s, level: Math.max(1, v) })} /><b className="big">{f1(s.level)}</b></div>
+        {dirty && (
+          <div className="two" style={{ marginTop: 8 }}>
+            <button className="btn ghost" disabled={busy} onClick={() => setS(initial)}>Descartar</button>
+            <button className="btn primary" disabled={busy || !valid} onClick={save}>{busy ? 'Guardando…' : 'Guardar'}</button>
+          </div>
+        )}
       </div>
-      {preview
-        ? <span className="note">En tus grupos te verán como <b>&nbsp;{preview}</b>{s.nick.trim() && s.lastName.trim() ? ' (manda el apodo)' : ''}</span>
-        : <span className="errtxt">Obligatorio: pon un apodo o un apellido para que no haya dos iguales en el grupo.</span>}
-      <div className="lbl" style={{ marginTop: 6 }}>Posición preferida</div>
-      <div className="seg">
-        {(['GK', 'DEF', 'ATT'] as Pos[]).map((k) => (
-          <button key={k} className={s.pos === k ? 'on' : ''} onClick={() => setS({ ...s, pos: k })}>{POS[k].label}</button>
-        ))}
+
+      <h2 className="sec">Apariencia</h2>
+      <div className="seg themeseg">
+        <button className={theme === 'dark' ? 'on' : ''} onClick={() => onTheme('dark')}><Icon n="moon" /> Oscuro</button>
+        <button className={theme === 'light' ? 'on' : ''} onClick={() => onTheme('light')}><Icon n="sun" /> Claro</button>
       </div>
-      <div className="lbl" style={{ marginTop: 6 }}>Tu nivel<span className="lockt">el admin de cada grupo puede ajustarlo</span></div>
-      <div className="starbox"><Stars v={s.level} size={34} onPick={(v) => setS({ ...s, level: Math.max(1, v) })} /><b className="big">{f1(s.level)}</b></div>
+
+      <h2 className="sec">Notificaciones</h2>
       <PushSettings me={me} call={call} flash={flash} onSaved={onUpdate} />
-      <div className="sheet-actions">
-        <button className="btn ghost" onClick={onLogout}>Cerrar sesión</button>
-        <button className="btn primary" onClick={save} disabled={busy}>Guardar</button>
-      </div>
-    </SheetShell>
+
+      <button className="btn ghost block logout" onClick={onLogout}><Icon n="logout" /> Cerrar sesión</button>
+      <small className="appver">Equilibrio FC · v1.7</small>
+    </main>
   );
 }
 
@@ -1739,59 +1817,79 @@ function DeleteGroupSheet({ group, call, flash, onClose, onDone }: {
   );
 }
 
-/** Enlace de invitación + acciones del grupo (Plantilla). */
-/** Escudo del grupo, invitación compacta (copiar / compartir) y salir o eliminar. */
-function GroupAdmin({ groupId, call, flash, version, onDelete, onLeave, onChanged }: {
-  groupId: string; call: Call; flash: (m: string) => void; version: number; onDelete: () => void; onLeave: () => void;
-  onChanged: () => void;
-}) {
-  const [info, setInfo] = useState<GroupInfo | null>(null);
+/** Barra compacta de invitación: enlace, Copiar (→ ¡Copiado!) y compartir. Solo admin y co-admins. */
+function InviteBar({ url, groupName, flash }: { url: string; groupName: string; flash: (m: string) => void }) {
   const [copied, setCopied] = useState(false);
-  const load = useCallback(() => { call<GroupInfo>(`/api/groups/${groupId}`).then(setInfo).catch((e) => flash(msg(e))); }, [call, groupId, flash]);
-  useEffect(() => { setInfo(null); load(); }, [load, version]);
-  if (!info) return null;
-  const inv = info.invite;
-  const manage = isManager(info.role);
-  const shareText = (url: string) => `¡Únete a nuestro grupo de fútbol en Football Star! ${url}`;
-
+  const shareText = `¡Únete a nuestro grupo de fútbol en Football Star! ${url}`;
   const copy = async () => {
-    if (!inv) return;
     try {
-      await navigator.clipboard.writeText(inv.url);
+      await navigator.clipboard.writeText(url);
       setCopied(true);
+      flash('Enlace copiado');
       setTimeout(() => setCopied(false), 2000);
     } catch { flash('No se pudo copiar: mantén pulsado el enlace para copiarlo'); }
   };
   const share = async () => {
-    if (!inv) return;
     if (navigator.share) {
-      try { await navigator.share({ title: info.name, text: shareText(inv.url) }); } catch { /* cancelado */ }
+      try { await navigator.share({ title: groupName, text: shareText }); } catch { /* cancelado */ }
     } else {
-      window.open(`https://wa.me/?text=${encodeURIComponent(shareText(inv.url))}`, '_blank', 'noopener');
+      window.open(`https://wa.me/?text=${encodeURIComponent(shareText)}`, '_blank', 'noopener');
     }
   };
-
   return (
-    <>
-      {manage && (
-        <div className="card form">
-          <div className="lbl">Escudo del grupo</div>
-          <ImageUploader kind="group" name={info.name} current={info.iconUrl} folder={`groups/${groupId}`} flash={flash}
-            onSave={async (url) => { await call(`/api/groups/${groupId}`, 'PATCH', { iconUrl: url }); load(); onChanged(); }} />
+    <div className="invbar">
+      <span className="invbar-url" title={url}>{url.replace(/^https?:\/\//, '')}</span>
+      <button className={`btn sm${copied ? ' copied' : ''}`} onClick={copy}>{copied ? <><Icon n="check" /> ¡Copiado!</> : 'Copiar'}</button>
+      <button className="iconbtn" onClick={share} aria-label="Compartir por WhatsApp u otra app"><Icon n="share" /></button>
+    </div>
+  );
+}
+
+/** Ajustes del grupo (menú ⋯ de Plantilla): escudo y nombre (admin / co-admin), salir o eliminar. */
+function GroupSettingsSheet({ group, call, flash, onClose, onChanged, onDelete, onLeave }: {
+  group: Group; call: Call; flash: (m: string) => void; onClose: () => void; onChanged: () => void;
+  onDelete: () => void; onLeave: () => void;
+}) {
+  const manage = isManager(group.role);
+  const [name, setName] = useState(group.name);
+  const [busy, setBusy] = useState(false);
+  const [sure, setSure] = useState(false);
+  const rename = async () => {
+    setBusy(true);
+    try {
+      await call(`/api/groups/${group.id}`, 'PATCH', { name: name.trim() });
+      flash('Grupo actualizado');
+      onChanged();
+    } catch (e) { flash(msg(e)); } finally { setBusy(false); }
+  };
+  return (
+    <SheetShell title={manage ? 'Editar grupo' : 'Grupo'} onClose={onClose}>
+      {manage ? (
+        <>
+          <ImageUploader kind="group" name={group.name} current={group.iconUrl ?? null} folder={`groups/${group.id}`} flash={flash}
+            onSave={async (url) => { await call(`/api/groups/${group.id}`, 'PATCH', { iconUrl: url }); onChanged(); }} />
+          <label htmlFor="gs-name" style={{ marginTop: 10 }}>Nombre del grupo</label>
+          <div className="inline">
+            <input id="gs-name" value={name} maxLength={60} onChange={(e) => setName(e.target.value)} autoComplete="off" />
+            {name.trim() !== group.name && (
+              <button className="btn primary" disabled={busy || !name.trim()} onClick={rename}>{busy ? '…' : 'Guardar'}</button>
+            )}
+          </div>
+        </>
+      ) : (
+        <div className="gs-head">
+          <GroupIcon name={group.name} url={group.iconUrl} size={52} />
+          <span className="pname"><b>{group.name}</b><small>{group.players} jugadores · eres {ROLE_LABEL[group.role].toLowerCase()}</small></span>
         </div>
       )}
-      {inv && (
-        <div className="invbar">
-          <span className="invbar-ico"><Icon n="link" /></span>
-          <span className="invbar-url" title={inv.url}>{inv.url.replace(/^https?:\/\//, '')}</span>
-          <button className={`btn sm${copied ? ' copied' : ''}`} onClick={copy}>{copied ? <><Icon n="check" /> ¡Copiado!</> : 'Copiar'}</button>
-          <button className="iconbtn" onClick={share} aria-label="Compartir por WhatsApp u otra app"><Icon n="share" /></button>
-        </div>
-      )}
-      {info.role === 'owner'
-        ? <button className="btn danger block" onClick={onDelete}>Eliminar grupo</button>
-        : <button className="btn ghost block" onClick={onLeave}>Salir del grupo</button>}
-    </>
+      <div className="sheet-actions col">
+        {group.role === 'owner'
+          ? <button className="btn danger block" onClick={onDelete}>Eliminar grupo</button>
+          : <button className={`btn block${sure ? ' danger' : ' ghost'}`} onClick={() => (sure ? onLeave() : setSure(true))}>
+            {sure ? `Pulsa otra vez para salir de “${group.name}”` : 'Salir del grupo'}
+          </button>}
+      </div>
+    </SheetShell>
   );
 }
 
@@ -1973,8 +2071,8 @@ function PollSheet({ groupId, call, flash, onClose, onCreated }: {
 }
 
 /** Chat del grupo en tiempo real (Supabase Realtime) con encuestas de asistencia. */
-function ChatRoom({ groups, groupId, setGroupId, meId, call, flash, onOpenMatch, onCreateMatch, onRead }: {
-  groups: Group[]; groupId: string; setGroupId: (id: string) => void; meId: string; call: Call; flash: (m: string) => void;
+function ChatRoom({ groups, groupId, meId, call, flash, onOpenMatch, onCreateMatch, onRead, onCreateGroup }: {
+  groups: Group[]; groupId: string; meId: string; onCreateGroup: () => void; call: Call; flash: (m: string) => void;
   onOpenMatch: (id: string) => void; onCreateMatch: (p: Prefill) => void; onRead: (groupId: string) => void;
 }) {
   const [msgs, setMsgs] = useState<ChatMsg[]>([]);
@@ -2117,19 +2215,26 @@ function ChatRoom({ groups, groupId, setGroupId, meId, call, flash, onOpenMatch,
   };
 
   if (!groups.length) {
-    return <main className="main"><div className="empty">Crea un grupo en Plantilla o entra con un enlace de invitación para chatear.</div></main>;
+    return (
+      <main className="main">
+        <Empty icon="chat" title="Aún no tienes grupo" text="Crea uno o entra con el enlace de invitación que te pase tu admin."
+          action={<button className="btn primary" onClick={onCreateGroup}><Icon n="plus" /> Crear grupo</button>} />
+      </main>
+    );
   }
 
   return (
     <>
-      <GroupSelect groups={groups} value={groupId} onChange={setGroupId} label={live ? 'Grupo · en directo' : 'Grupo'} />
       <main className="main chatlist" ref={scrollRef} onScroll={() => {
         const el = scrollRef.current;
         if (el) stick.current = el.scrollHeight - el.scrollTop - el.clientHeight < 120;
       }}>
+        {live && <span className="livepill"><i />En directo</span>}
         {hasMore && <button className="btn ghost sm" style={{ alignSelf: 'center' }} onClick={older}>Mensajes anteriores</button>}
-        {loading ? <div className="empty">Cargando…</div> : msgs.length === 0 && (
-          <div className="empty">{manage ? 'Aún no hay mensajes. Abre la convocatoria con una encuesta 📊' : 'Aún no hay mensajes. ¡Saluda al grupo!'}</div>
+        {loading ? <SkChat /> : msgs.length === 0 && (
+          <Empty icon="chat" title="Todavía no hay mensajes"
+            text={manage ? 'Abre la convocatoria con una encuesta de asistencia.' : '¡Saluda al grupo!'}
+            action={manage ? <button className="btn primary" onClick={() => setPollOpen(true)}><Icon n="poll" /> Nueva encuesta</button> : undefined} />
         )}
         {msgs.map((m, i) => {
           const prev = msgs[i - 1];
@@ -2169,7 +2274,7 @@ function ChatRoom({ groups, groupId, setGroupId, meId, call, flash, onOpenMatch,
                         guests: p.confirmed.filter((u) => u.guest).map((u) => ({ name: u.name, stars: u.stars ?? 3, pos: u.pos })),
                       });
                     }} />
-                ) : <div className="card note">Cargando encuesta…</div>
+                ) : <div className="card pollcard sk-poll"><span className="sk sk-line w60" /><span className="sk sk-line w80 thin" /><span className="sk sk-line w40 thin" /></div>
               ) : (
                 <div className="bubble">{m.content}<small>{hhmm(m.createdAt)}</small></div>
               )}
@@ -2190,68 +2295,119 @@ function ChatRoom({ groups, groupId, setGroupId, meId, call, flash, onOpenMatch,
 }
 
 /* ================================ Pestañas ================================ */
-function SquadTab({ groups, groupId, setGroupId, call, flash, version, openPlayer, openGroup, openExisting, onDeleteGroup, onLeaveGroup, onGroupsChanged }: {
-  groups: Group[]; groupId: string; setGroupId: (id: string) => void; call: Call; flash: (m: string) => void; version: number;
-  openPlayer: (p: PlayerInit, accounts: Player[]) => void; openGroup: () => void; openExisting: () => void;
-  onDeleteGroup: () => void; onLeaveGroup: () => void; onGroupsChanged: () => void;
+/** Pestaña Plantilla: jugadores (buscador y filtros) o estadísticas; invitación compacta; ajustes en ⋯. */
+function RosterView({ groups, groupId, call, flash, version, openPlayer, openNewPlayer, openExisting, openSettings, onCreateGroup, onAdjusted }: {
+  groups: Group[]; groupId: string; call: Call; flash: (m: string) => void; version: number;
+  openPlayer: (p: PlayerInit, accounts: Player[]) => void; openNewPlayer: () => void; openExisting: () => void;
+  openSettings: () => void; onCreateGroup: () => void; onAdjusted: () => void;
 }) {
   const role = groups.find((g) => g.id === groupId)?.role;
   const manage = isManager(role);
+  const [sub, setSub] = useState<'players' | 'stats'>('players');
   const [players, setPlayers] = useState<Player[] | null>(null);
+  const [info, setInfo] = useState<GroupInfo | null>(null);
   const [filter, setFilter] = useState<'ALL' | Pos>('ALL');
+  const [q, setQ] = useState('');
   useEffect(() => {
     if (!groupId) { setPlayers([]); return; }
     setPlayers(null);
     call<Player[]>(`/api/groups/${groupId}/players`).then(setPlayers).catch((e) => { flash(msg(e)); setPlayers([]); });
   }, [groupId, call, flash, version]);
+  useEffect(() => {
+    setInfo(null);
+    if (groupId) call<GroupInfo>(`/api/groups/${groupId}`).then(setInfo).catch(() => undefined);
+  }, [groupId, call, version]);
+
+  if (groups.length === 0) {
+    return (
+      <main className="main">
+        <Empty icon="squad" title="Crea tu primer grupo" text="Por ejemplo “Fútbol Jueves”. Luego invita a tus jugadores con un enlace."
+          action={<button className="btn primary" onClick={onCreateGroup}><Icon n="plus" /> Crear grupo</button>} />
+      </main>
+    );
+  }
 
   const all = players ?? [];
-  const list = all.filter((p) => filter === 'ALL' || p.pos === filter).sort((a, b) => b.stars - a.stars || a.name.localeCompare(b.name));
+  const norm = (t: string) => t.normalize('NFD').replace(/[̀-ͯ]/g, '').toLowerCase();
+  const list = all
+    .filter((p) => (filter === 'ALL' || p.pos === filter) && (!q.trim() || norm(`${p.displayName ?? p.name} ${p.nick ?? ''} ${p.lastName ?? ''}`).includes(norm(q.trim()))))
+    .sort((a, b) => b.stars - a.stars || a.name.localeCompare(b.name));
   const gk = all.filter((p) => p.pos === 'GK').length;
   const avg = all.length ? all.reduce((s, p) => s + p.stars, 0) / all.length : 0;
+  const filtered = filter !== 'ALL' || !!q.trim();
 
   return (
-    <>
-      <GroupSelect groups={groups} value={groupId} onChange={setGroupId} onCreate={openGroup} />
-      {groups.length === 0 && <button className="btn primary block" onClick={openGroup}><Icon n="plus" /> Crear grupo</button>}
-      {groups.length === 0 ? (
-        <div className="empty">Crea tu primer grupo, por ejemplo “Fútbol Jueves”, y añade a sus jugadores.</div>
+    <main className="main roster" key={groupId}>
+      <div className="toolbar">
+        <div className="seg">
+          <button className={sub === 'players' ? 'on' : ''} onClick={() => setSub('players')}>Jugadores</button>
+          <button className={sub === 'stats' ? 'on' : ''} onClick={() => setSub('stats')}>Estadísticas</button>
+        </div>
+        <button className="iconbtn" onClick={openSettings} aria-label={manage ? 'Editar grupo' : 'Ajustes del grupo'} title={manage ? 'Editar grupo' : 'Grupo'}><Icon n="more" /></button>
+      </div>
+
+      {sub === 'stats' ? (
+        <StatsPanel groups={groups} groupId={groupId} call={call} flash={flash} version={version} onAdjusted={onAdjusted} />
       ) : (
         <>
-          <div className="note"><Icon n="lock" /><span>{manage
-            ? `${all.length} jugadores · ${gk} porteros · media ${f1(avg)}★. Las estrellas solo las ven el admin y los co-admins.`
-            : `${all.length} jugadores · ${gk} porteros. Eres ${ROLE_LABEL[role ?? 'member'].toLowerCase()} de este grupo.`}</span></div>
+          {info?.invite && <InviteBar url={info.invite.url} groupName={info.name} flash={flash} />}
+          <div className="searchbox">
+            <Icon n="search" />
+            <input value={q} onChange={(e) => setQ(e.target.value)} placeholder="Buscar jugador" aria-label="Buscar jugador" autoComplete="off" />
+            {q && <button className="iconbtn round sm" onClick={() => setQ('')} aria-label="Borrar búsqueda"><Icon n="x" /></button>}
+          </div>
           <div className="filters">
             {([['ALL', 'Todos'], ['GK', 'Porteros'], ['DEF', 'Defensas'], ['ATT', 'Atacantes']] as [string, string][]).map(([k, l]) => (
               <button key={k} className={`fchip${filter === k ? ' on' : ''}`} onClick={() => setFilter(k as 'ALL' | Pos)}>{l}</button>
             ))}
           </div>
-          {players === null ? <div className="empty">Cargando…</div> : list.length === 0 ? (
-            <div className="empty">Todavía no hay jugadores aquí. Pulsa “Jugador” para añadir el primero.</div>
-          ) : list.map((p) => {
-            const inner = (
-              <>
-                <Av name={p.displayName ?? p.name} url={p.photoUrl} />
-                <span className="pname">
-                  <b>{p.displayName ?? p.name}</b>
-                  <small>{[POS[p.pos].label, p.role !== 'member' ? ROLE_LABEL[p.role] : '', p.hasAccount ? '' : 'sin cuenta'].filter(Boolean).join(' · ')}</small>
-                </span>
-                <PosChip pos={p.pos} />
-                {manage ? <span><Stars v={p.stars} size={13} /></span> : <span />}
-              </>
-            );
-            return manage ? (
-              <button key={p.id} className="prow" onClick={() => openPlayer(
-                { id: p.id, name: p.name, nick: p.nick ?? '', lastName: p.lastName ?? '', pos: p.pos, stars: Math.min(5, Math.max(1, p.stars)), role: p.role, hasAccount: p.hasAccount },
-                all.filter((x) => x.hasAccount && x.id !== p.id)
-              )}>{inner}</button>
-            ) : <div key={p.id} className="prow">{inner}</div>;
-          })}
-          {manage && <button className="btn block" onClick={openExisting}>Añadir jugador de otro grupo</button>}
-          {groupId && <GroupAdmin groupId={groupId} call={call} flash={flash} version={version} onDelete={onDeleteGroup} onLeave={onLeaveGroup} onChanged={onGroupsChanged} />}
+          {players !== null && all.length > 0 && (
+            <span className="summary">
+              {all.length} jugadores · {gk} porteros{manage ? ` · media ${f1(avg)}★` : ''}
+              {manage && <span className="lockt"><Icon n="lock" /> estrellas solo visibles para admins</span>}
+            </span>
+          )}
+          {players === null ? <SkRows /> : list.length === 0 ? (
+            filtered ? (
+              <Empty icon="search" title="Ningún jugador coincide"
+                action={<button className="btn" onClick={() => { setQ(''); setFilter('ALL'); }}>Quitar filtros</button>} />
+            ) : (
+              <Empty icon="squad" title="Todavía no hay jugadores"
+                text={manage ? 'Añade al primero o comparte el enlace de invitación.' : 'Cuando se unan aparecerán aquí.'}
+                action={manage ? <button className="btn primary" onClick={openNewPlayer}><Icon n="plus" /> Añadir jugador</button> : undefined} />
+            )
+          ) : (
+            <div className="card list">
+              {list.map((p) => {
+                const inner = (
+                  <>
+                    <Av name={p.displayName ?? p.name} url={p.photoUrl} />
+                    <span className="pname">
+                      <b>{p.displayName ?? p.name}</b>
+                      <small>{[POS[p.pos].label, p.role !== 'member' ? ROLE_LABEL[p.role] : '', p.hasAccount ? '' : 'sin cuenta'].filter(Boolean).join(' · ')}</small>
+                    </span>
+                    <PosChip pos={p.pos} />
+                    {manage ? <span><Stars v={p.stars} size={12} /></span> : <span />}
+                  </>
+                );
+                return manage ? (
+                  <button key={p.id} className="prow" onClick={() => openPlayer(
+                    { id: p.id, name: p.name, nick: p.nick ?? '', lastName: p.lastName ?? '', pos: p.pos, stars: Math.min(5, Math.max(1, p.stars)), role: p.role, hasAccount: p.hasAccount },
+                    all.filter((x) => x.hasAccount && x.id !== p.id)
+                  )}>{inner}</button>
+                ) : <div key={p.id} className="prow">{inner}</div>;
+              })}
+            </div>
+          )}
+          {manage && all.length > 0 && (
+            <div className="two">
+              <button className="btn primary" onClick={openNewPlayer}><Icon n="plus" /> Jugador</button>
+              <button className="btn" onClick={openExisting}>De otro grupo</button>
+            </div>
+          )}
         </>
       )}
-    </>
+    </main>
   );
 }
 
@@ -2260,8 +2416,8 @@ function readAdj(): string[] {
   try { return JSON.parse(localStorage.getItem(ADJ_KEY) || '[]'); } catch { return []; }
 }
 
-function StatsTab({ groups, groupId, setGroupId, call, flash, version, onAdjusted }: {
-  groups: Group[]; groupId: string; setGroupId: (id: string) => void; call: Call; flash: (m: string) => void; version: number; onAdjusted: () => void;
+function StatsPanel({ groups, groupId, call, flash, version, onAdjusted }: {
+  groups: Group[]; groupId: string; call: Call; flash: (m: string) => void; version: number; onAdjusted: () => void;
 }) {
   const [rows, setRows] = useState<StatRow[] | null>(null);
   const [done, setDone] = useState<string[]>([]);
@@ -2296,49 +2452,47 @@ function StatsTab({ groups, groupId, setGroupId, call, flash, version, onAdjuste
     } catch (e) { flash(msg(e)); }
   };
 
+  if (rows === null) return <SkRows n={5} />;
   return (
     <>
-      <GroupSelect groups={groups} value={groupId} onChange={setGroupId} />
-      {rows === null ? <div className="empty">Cargando…</div> : (
+      {adj.length > 0 && (
         <>
-          {adj.length > 0 && (
-            <>
-              <h2 className="sec">Ajustes sugeridos</h2>
-              <div className="card">
-                {adj.map(({ p, d, why }) => (
-                  <div className="arow" key={p.playerId}>
-                    <Av name={p.name} />
-                    <span className="pname"><b>{p.name}</b><small className="why">{why}</small></span>
-                    <button className="btn sm" onClick={() => apply(p, d)}>
-                      <span className={`delta${d < 0 ? ' dn' : ''}`}>{d > 0 ? '+' : '−'}½★</span> {f1(p.stars)} → {f1(p.stars + d)}
-                    </button>
-                  </div>
-                ))}
+          <h2 className="sec">Ajustes sugeridos</h2>
+          <div className="card">
+            {adj.map(({ p, d, why }) => (
+              <div className="arow" key={p.playerId}>
+                <Av name={p.name} />
+                <span className="pname"><b>{p.name}</b><small className="why">{why}</small></span>
+                <button className="btn sm" onClick={() => apply(p, d)}>
+                  <span className={`delta${d < 0 ? ' dn' : ''}`}>{d > 0 ? '+' : '−'}½★</span> {f1(p.stars)} → {f1(p.stars + d)}
+                </button>
               </div>
-            </>
-          )}
+            ))}
+          </div>
+        </>
+      )}
+      {ranked.length === 0 ? (
+        <Empty icon="stats" title="Aún no hay estadísticas" text="Aparecerán cuando se registre el resultado del primer partido." />
+      ) : (
+        <>
           <h2 className="sec">Ranking del grupo</h2>
-          {ranked.length === 0 ? (
-            <div className="empty">Aún no hay partidos con resultado en este grupo. Registra los resultados desde el Historial.</div>
-          ) : (
-            <div className="card">
-              {ranked.map((p, i) => {
-                const r = Math.round((p.w / p.pj) * 100);
-                return (
-                  <div className="rrow" key={p.playerId}>
-                    <span className="rk">{i + 1}</span>
-                    <Av name={p.name} />
-                    <span className="pname">
-                      <span className="nm"><b>{p.name}</b>{p.mvp > 0 && <span className="chip gk">MVP ×{p.mvp}</span>}</span>
-                      <span className="wbar"><i style={{ width: r + '%' }} /></span>
-                    </span>
-                    <span className="pct"><b>{r}%</b><small>{p.w} de {p.pj}</small></span>
-                  </div>
-                );
-              })}
-            </div>
-          )}
-          <div className="note"><Icon n="stats" /><span>Calculado con los partidos finalizados que tienen resultado. Las sugerencias se basan en victorias y votos MVP.</span></div>
+          <div className="card">
+            {ranked.map((p, i) => {
+              const r = Math.round((p.w / p.pj) * 100);
+              return (
+                <div className="rrow" key={p.playerId}>
+                  <span className="rk">{i + 1}</span>
+                  <Av name={p.name} />
+                  <span className="pname">
+                    <span className="nm"><b>{p.name}</b>{p.mvp > 0 && <span className="chip gk">MVP ×{p.mvp}</span>}</span>
+                    <span className="wbar"><i style={{ width: r + '%' }} /></span>
+                  </span>
+                  <span className="pct"><b>{r}%</b><small>{p.w} de {p.pj}</small></span>
+                </div>
+              );
+            })}
+          </div>
+          <span className="summary">Partidos finalizados con resultado. Las sugerencias se basan en victorias y votos MVP.</span>
         </>
       )}
     </>
@@ -2346,11 +2500,102 @@ function StatsTab({ groups, groupId, setGroupId, call, flash, version, onAdjuste
 }
 
 /* ================================ Principal ================================ */
-const TITLES: Record<Tab, string> = { matches: 'Partidos', chat: 'Chat', history: 'Historial', squad: 'Plantilla', stats: 'Estadísticas' };
+const TITLES: Record<Tab, string> = { matches: 'Partidos', chat: 'Chat', squad: 'Plantilla', profile: 'Perfil' };
 const GROUP_KEY = 'eqfc-group';
+
+/** Cabecera fija: selector compacto del grupo activo (con su escudo) y la campana. */
+function TopHeader({ groups, groupId, setGroupId, onCreateGroup, unread, onBell }: {
+  groups: Group[]; groupId: string; setGroupId: (id: string) => void; onCreateGroup: () => void; unread: number; onBell: () => void;
+}) {
+  return (
+    <header className="tophdr">
+      {groups.length ? (
+        <Picker hdr value={groupId} onChange={setGroupId} options={groupOpts(groups)} title="Cambiar de grupo"
+          subtitle="El grupo activo se usa en Chat y Plantilla" placeholder="Elige un grupo…"
+          footer={<button className="btn primary block" onClick={onCreateGroup}><Icon n="plus" /> Crear nuevo grupo</button>} />
+      ) : (
+        <span className="brand"><span className="brand-ico"><Icon n="ball" /></span>Equilibrio FC</span>
+      )}
+      <button className="iconbtn bellbtn" onClick={onBell} aria-label={`Avisos${unread ? ` (${unread} sin leer)` : ''}`}>
+        <Icon n="bell" />{unread > 0 && <span className="dot">{badgeTxt(unread)}</span>}
+      </button>
+    </header>
+  );
+}
+
+/** Barra inferior de 4 pestañas con sus contadores. */
+function BottomNav({ tab, setTab, me, badges }: {
+  tab: Tab; setTab: (t: Tab) => void; me: Me | null;
+  badges: { chat: number; matches: number; matchesNew: boolean; profile: boolean };
+}) {
+  return (
+    <nav className="nav bnav" aria-label="Secciones">
+      {(['matches', 'chat', 'squad', 'profile'] as Tab[]).map((k) => (
+        <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)} aria-current={tab === k ? 'page' : undefined}
+          aria-label={`${TITLES[k]}${k === 'chat' && badges.chat ? ` (${badges.chat} sin leer)` : ''}`}>
+          {k === 'profile' && me?.photoUrl ? <span className="navav"><Av name={me.displayName ?? me.name} url={me.photoUrl} size={24} /></span> : <Icon n={k} />}
+          <span>{TITLES[k]}</span>
+          {k === 'chat' && badges.chat > 0 && <span className="dot">{badgeTxt(badges.chat)}</span>}
+          {k === 'matches' && badges.matches > 0 && <span className="dot">{badges.matches}</span>}
+          {k === 'matches' && !badges.matches && badges.matchesNew && <span className="dot new" aria-label="Partidos nuevos" />}
+          {k === 'profile' && badges.profile && <span className="dot new" aria-label="Completa tu perfil" />}
+        </button>
+      ))}
+    </nav>
+  );
+}
+
+/** Pestaña Partidos: próximos e historial, nada más. */
+function MatchesView({ loaded, error, pending, history, groups, managed, toResult, freshIds, sub, setSub, onNew, onOpen, onCreateGroup, call, flash }: {
+  loaded: boolean; error: string; pending: MatchRow[]; history: HistRow[]; groups: Group[]; managed: Group[]; toResult: HistRow[];
+  freshIds: string[]; sub: 'next' | 'history'; setSub: (s: 'next' | 'history') => void; onNew: () => void; onOpen: (id: string) => void;
+  onCreateGroup: () => void; call: Call; flash: (m: string) => void;
+}) {
+  const canCreate = managed.length > 0;
+  return (
+    <main className="main matches">
+      {error && <div className="alert err">No se pudo conectar con el servidor: {error}</div>}
+      {loaded && <PushBanner call={call} flash={flash} />}
+      {toResult.length > 0 && sub === 'next' && (
+        <button className="nudge" onClick={() => setSub('history')}>
+          <span className="nudge-ico"><Icon n="ball" /></span>
+          <span className="pname"><b>¡Vota al MVP y registra el resultado!</b><small>{toResult.length === 1 ? '1 partido espera' : `${toResult.length} partidos esperan`} resultado</small></span>
+          <Icon n="chev" />
+        </button>
+      )}
+      <div className="toolbar">
+        <div className="seg">
+          <button className={sub === 'next' ? 'on' : ''} onClick={() => setSub('next')}>Próximos{loaded && pending.length > 0 && <span className="segn">{pending.length}</span>}</button>
+          <button className={sub === 'history' ? 'on' : ''} onClick={() => setSub('history')}>Historial{toResult.length > 0 && <span className="segn warn">{toResult.length}</span>}</button>
+        </div>
+        {canCreate && <button className="btn primary sm" onClick={onNew} aria-label="Nuevo partido"><Icon n="plus" /> Nuevo</button>}
+      </div>
+
+      {!loaded ? <SkMatches /> : groups.length === 0 ? (
+        <Empty icon="squad" title="Aún no estás en ningún grupo" text="Crea el tuyo o pide a tu admin el enlace de invitación."
+          action={<button className="btn primary" onClick={onCreateGroup}><Icon n="plus" /> Crear grupo</button>} />
+      ) : sub === 'next' ? (
+        pending.length === 0 ? (
+          <Empty icon="matches" title="No hay partidos próximos" text="Convoca con una encuesta en el Chat o crea uno directamente."
+            action={canCreate ? <button className="btn primary" onClick={onNew}><Icon n="plus" /> Nuevo partido</button> : undefined} />
+        ) : pending.map((m) => (
+          <MatchCard key={m.id} m={m} count={m.playersCount} fresh={!!m.isNew || freshIds.includes(m.id)}
+            right={<Icon n="chev" />} onOpen={() => onOpen(m.id)} />
+        ))
+      ) : history.length === 0 ? (
+        <Empty icon="history" title="Todavía no hay partidos jugados" text="Aparecerán aquí cuando pase su hora." />
+      ) : history.map((m) => (
+        <MatchCard key={m.id} m={m} played onOpen={() => onOpen(m.id)}
+          right={m.needsResult ? <span className="chip warn">Sin resultado</span> : <span className="score">{m.scoreA}<i>–</i>{m.scoreB}</span>} />
+      ))}
+    </main>
+  );
+}
 
 function Main({ onLogout, startGroupId }: { onLogout: () => void; startGroupId?: string | null }) {
   const [tab, setTab] = useState<Tab>(startGroupId ? 'chat' : 'matches');
+  const [matchesSub, setMatchesSub] = useState<'next' | 'history'>('next');
+  const [theme, setThemeState] = useState<Theme>('dark');
   const [view, setView] = useState<View>(null);
   const [me, setMe] = useState<Me | null>(null);
   const [groups, setGroups] = useState<Group[]>([]);
@@ -2359,6 +2604,7 @@ function Main({ onLogout, startGroupId }: { onLogout: () => void; startGroupId?:
   const [loaded, setLoaded] = useState(false);
   const [error, setError] = useState('');
   const [toastMsg, setToastMsg] = useState('');
+  const [toastKey, setToastKey] = useState(0);
   const [sheet, setSheet] = useState<SheetState>(null);
   const [groupId, setGroupIdState] = useState(startGroupId ?? '');
   const [version, setVersion] = useState(0);
@@ -2367,7 +2613,10 @@ function Main({ onLogout, startGroupId }: { onLogout: () => void; startGroupId?:
   const [bellOpen, setBellOpen] = useState(false);
   const [freshIds, setFreshIds] = useState<string[]>([]); // partidos nuevos/modificados que se están viendo ahora
 
-  // El grupo elegido se recuerda en este navegador y es el mismo en Chat, Plantilla y Estadísticas.
+  useEffect(() => { const t = readTheme(); setThemeState(t); if (t === 'light') applyTheme(t); }, []);
+  const setTheme = (t: Theme) => { setThemeState(t); applyTheme(t); };
+
+  // El grupo elegido se recuerda en este navegador y es el mismo en Chat y Plantilla.
   const setGroupId = useCallback((id: string) => {
     setGroupIdState(id);
     try { localStorage.setItem(GROUP_KEY, id); } catch { /* sin almacenamiento */ }
@@ -2378,12 +2627,13 @@ function Main({ onLogout, startGroupId }: { onLogout: () => void; startGroupId?:
   }, [startGroupId, setGroupId]);
 
   const call: Call = useCallback(<T,>(path: string, method = 'GET', body?: unknown) => api<T>(path, method, body), []);
-  const flash = useCallback((m: string) => setToastMsg(m), []);
+  // Toast discreto arriba: desaparece solo a los 2,5 s
+  const flash = useCallback((m: string) => { setToastMsg(m); setToastKey((k) => k + 1); }, []);
   useEffect(() => {
     if (!toastMsg) return;
-    const t = setTimeout(() => setToastMsg(''), 2600);
+    const t = setTimeout(() => setToastMsg(''), 2500);
     return () => clearTimeout(t);
-  }, [toastMsg]);
+  }, [toastMsg, toastKey]);
 
   useEffect(() => { call<Me>('/api/me').then(setMe).catch((e) => { if (e instanceof AuthError) onLogout(); else setError(msg(e)); }); }, [call, onLogout]);
 
@@ -2397,7 +2647,7 @@ function Main({ onLogout, startGroupId }: { onLogout: () => void; startGroupId?:
     }
   }, [call, onLogout]);
 
-  // Refresco cada 30 s: un partido pasa solo de "Partidos" al "Historial" cuando llega su hora.
+  // Refresco cada 30 s: un partido pasa solo de "Próximos" al "Historial" cuando llega su hora.
   useEffect(() => {
     refresh();
     const t = setInterval(refresh, 30000);
@@ -2509,12 +2759,14 @@ function Main({ onLogout, startGroupId }: { onLogout: () => void; startGroupId?:
   const toResult = history.filter((h) => h.needsResult && managedIds.has(h.groupId));
   const current = groups.find((g) => g.id === groupId);
   const bump = () => { setVersion((v) => v + 1); refresh(); };
+  const openGroupCreate = () => setSheet({ t: 'group' });
 
   const leaveGroup = async () => {
-    if (!me || !current || !confirm(`¿Salir del grupo “${current.name}”?`)) return;
+    if (!me || !current) return;
     try {
       await call(`/api/groups/${current.id}/players/${me.id}`, 'DELETE');
       flash('Has salido del grupo');
+      setSheet(null);
       setGroupIdState('');
       bump();
     } catch (e) { flash(msg(e)); }
@@ -2530,7 +2782,7 @@ function Main({ onLogout, startGroupId }: { onLogout: () => void; startGroupId?:
   } else if (view && view.t === 'new') {
     screen = (
       <NewMatch groups={managed} prefill={view.prefill} call={call} flash={flash} onClose={() => setView(null)}
-        onCreated={(id) => { setView({ t: 'match', id, pack: true }); setTab('matches'); refresh(); }} />
+        onCreated={(id) => { setView({ t: 'match', id, pack: true }); setTab('matches'); setMatchesSub('next'); refresh(); }} />
     );
   } else if (view && view.t === 'match') {
     screen = (
@@ -2541,100 +2793,41 @@ function Main({ onLogout, startGroupId }: { onLogout: () => void; startGroupId?:
         onEdit={() => setView({ t: 'edit', id: view.id })} />
     );
   } else {
-    const withGroup = tab === 'squad' || tab === 'stats' || tab === 'chat';
-    const eyebrow = withGroup && current ? `Equilibrio FC · ${current.name}` : 'Equilibrio FC';
-    const bell = (
-      <button className="iconbtn bellbtn" onClick={() => setBellOpen(true)} aria-label={`Avisos${unreadNotifs ? ` (${unreadNotifs} sin leer)` : ''}`}>
-        <Icon n="bell" />{unreadNotifs > 0 && <span className="dot">{badgeTxt(unreadNotifs)}</span>}
-      </button>
-    );
-    const right = (
-      <span className="hdr-actions">
-        {tab === 'squad' && isManager(current?.role) && (
-          <button className="btn primary sm" onClick={() => setSheet({ t: 'player', init: { name: '', nick: '', lastName: '', pos: 'DEF', stars: 3 }, accounts: [] })}><Icon n="plus" /> Jugador</button>
-        )}
-        {bell}
-        {tab === 'matches' && (
-          <button className="iconbtn avbtn" onClick={() => setSheet({ t: 'profile' })} aria-label="Mi perfil">
-            {me?.photoUrl ? <Av name={me.displayName ?? me.name} url={me.photoUrl} size={36} /> : <Icon n="user" />}
-          </button>
-        )}
-      </span>
-    );
+    let body: ReactNode;
+    if (tab === 'chat') {
+      body = (
+        <ChatRoom groups={groups} groupId={groupId} meId={me?.id ?? ''} call={call} flash={flash}
+          onOpenMatch={(id) => setView({ t: 'match', id })}
+          onCreateMatch={(prefill) => setView({ t: 'new', prefill })}
+          onRead={markChatRead} onCreateGroup={openGroupCreate} />
+      );
+    } else if (tab === 'squad') {
+      body = (
+        <RosterView groups={groups} groupId={groupId} call={call} flash={flash} version={version}
+          openPlayer={(init, accounts) => setSheet({ t: 'player', init, accounts })}
+          openNewPlayer={() => setSheet({ t: 'player', init: { name: '', nick: '', lastName: '', pos: 'DEF', stars: 3 }, accounts: [] })}
+          openExisting={() => setSheet({ t: 'existing' })} openSettings={() => setSheet({ t: 'groupSettings' })}
+          onCreateGroup={openGroupCreate} onAdjusted={bump} />
+      );
+    } else if (tab === 'profile') {
+      body = me ? (
+        <ProfileView key={me.id} me={me} call={call} flash={flash} onUpdate={setMe} onLogout={onLogout} theme={theme} onTheme={setTheme} />
+      ) : <main className="main"><SkRows n={4} /></main>;
+    } else {
+      body = (
+        <MatchesView loaded={loaded} error={error} pending={pending} history={history} groups={groups} managed={managed}
+          toResult={toResult} freshIds={freshIds} sub={matchesSub} setSub={setMatchesSub}
+          onNew={() => setView({ t: 'new' })} onOpen={(id) => setView({ t: 'match', id })}
+          onCreateGroup={openGroupCreate} call={call} flash={flash} />
+      );
+    }
     screen = (
       <>
-        <Hdr eyebrow={eyebrow} title={TITLES[tab]} right={right} />
-        {tab === 'chat' ? (
-          <ChatRoom groups={groups} groupId={groupId} setGroupId={setGroupId} meId={me?.id ?? ''} call={call} flash={flash}
-            onOpenMatch={(id) => setView({ t: 'match', id })}
-            onCreateMatch={(prefill) => setView({ t: 'new', prefill })}
-            onRead={markChatRead} />
-        ) : (
-          <main className="main" key={tab}>
-            {error && <div className="alert err">No se pudo conectar con el servidor: {error}</div>}
-            {me && !me.nick && !me.lastName && (
-              <div className="alert">
-                <b>Completa tu perfil: añade un apodo o tu apellido</b>
-                <span>Así nadie se confunde contigo en las convocatorias (p. ej. “{me.name} M.”).</span>
-                <button className="btn primary sm" style={{ alignSelf: 'flex-start' }} onClick={() => setSheet({ t: 'profile' })}>Completar perfil</button>
-              </div>
-            )}
-            {toResult.length > 0 && tab !== 'history' && (
-              <div className="alert">
-                <b>El partido ya se ha jugado. ¡Vota al MVP y registra el resultado!</b>
-                <span>{toResult.length === 1 ? '1 partido espera' : `${toResult.length} partidos esperan`} resultado.</span>
-                <button className="btn primary sm" style={{ alignSelf: 'flex-start' }} onClick={() => setTab('history')}>Ir al Historial</button>
-              </div>
-            )}
-
-            {tab === 'matches' && (
-              <>
-                {loaded && <PushBanner call={call} flash={flash} />}
-                {managed.length > 0 && <button className="btn primary block" onClick={() => setView({ t: 'new' })}><Icon n="plus" /> Nuevo partido</button>}
-                {loaded && groups.length === 0 && (
-                  <div className="empty">Aún no estás en ningún grupo. Crea el tuyo en Plantilla o pide a tu admin el enlace de invitación.</div>
-                )}
-                <h2 className="sec">Próximos</h2>
-                {!loaded ? <div className="empty">Cargando…</div> : pending.length === 0 ? (
-                  <div className="empty">No hay partidos próximos. Convoca con una encuesta en el Chat o crea uno directamente.</div>
-                ) : pending.map((m) => (
-                  <MatchCard key={m.id} m={m} count={m.playersCount} fresh={!!m.isNew || freshIds.includes(m.id)}
-                    right={<Icon n="chev" />} onOpen={() => setView({ t: 'match', id: m.id })} />
-                ))}
-              </>
-            )}
-
-            {tab === 'history' && (
-              !loaded ? <div className="empty">Cargando…</div> : history.length === 0 ? (
-                <div className="empty">Todavía no hay partidos jugados. Aparecerán aquí cuando pase su hora.</div>
-              ) : history.map((m) => (
-                <MatchCard key={m.id} m={m} played onOpen={() => setView({ t: 'match', id: m.id })}
-                  right={m.needsResult ? <span className="chip warn">Sin resultado</span> : <span className="score">{m.scoreA}–{m.scoreB}</span>} />
-              ))
-            )}
-
-            {tab === 'squad' && (
-              <SquadTab groups={groups} groupId={groupId} setGroupId={setGroupId} call={call} flash={flash} version={version}
-                openPlayer={(init, accounts) => setSheet({ t: 'player', init, accounts })} openGroup={() => setSheet({ t: 'group' })}
-                openExisting={() => setSheet({ t: 'existing' })}
-                onDeleteGroup={() => setSheet({ t: 'deleteGroup' })} onLeaveGroup={leaveGroup} onGroupsChanged={refresh} />
-            )}
-            {tab === 'stats' && (
-              <StatsTab groups={groups} groupId={groupId} setGroupId={setGroupId} call={call} flash={flash} version={version} onAdjusted={bump} />
-            )}
-          </main>
-        )}
-        <nav className="nav n5" aria-label="Secciones">
-          {(['matches', 'chat', 'history', 'squad', 'stats'] as Tab[]).map((k) => (
-            <button key={k} className={tab === k ? 'on' : ''} onClick={() => setTab(k)}
-              aria-label={`${TITLES[k]}${k === 'chat' && unreadChatTotal ? ` (${unreadChatTotal} sin leer)` : ''}`}>
-              <Icon n={k} />{TITLES[k]}
-              {k === 'history' && toResult.length > 0 && <span className="dot">{toResult.length}</span>}
-              {k === 'chat' && unreadChatTotal > 0 && <span className="dot">{badgeTxt(unreadChatTotal)}</span>}
-              {k === 'matches' && anyNewMatches && tab !== 'matches' && <span className="dot new" aria-label="Partidos nuevos" />}
-            </button>
-          ))}
-        </nav>
+        <TopHeader groups={groups} groupId={groupId} setGroupId={setGroupId} onCreateGroup={openGroupCreate}
+          unread={unreadNotifs} onBell={() => setBellOpen(true)} />
+        <div className="tabbody" key={tab}>{body}</div>
+        <BottomNav tab={tab} setTab={setTab} me={me}
+          badges={{ chat: unreadChatTotal, matches: toResult.length, matchesNew: anyNewMatches && tab !== 'matches', profile: !!me && !me.nick && !me.lastName }} />
       </>
     );
   }
@@ -2653,9 +2846,9 @@ function Main({ onLogout, startGroupId }: { onLogout: () => void; startGroupId?:
       {sheet && sheet.t === 'existing' && (
         <ExistingSheet groupId={groupId} call={call} flash={flash} onClose={() => setSheet(null)} onDone={() => { setSheet(null); bump(); }} />
       )}
-      {sheet && sheet.t === 'profile' && me && (
-        <ProfileSheet me={me} call={call} flash={flash} onClose={() => setSheet(null)} onLogout={onLogout} onUpdate={setMe}
-          onSaved={(m) => { setMe(m); setSheet(null); bump(); }} />
+      {sheet && sheet.t === 'groupSettings' && current && (
+        <GroupSettingsSheet key={current.id} group={current} call={call} flash={flash} onClose={() => setSheet(null)}
+          onChanged={refresh} onDelete={() => setSheet({ t: 'deleteGroup' })} onLeave={leaveGroup} />
       )}
       {sheet && sheet.t === 'deleteGroup' && current && (
         <DeleteGroupSheet group={current} call={call} flash={flash} onClose={() => setSheet(null)}
@@ -2663,7 +2856,7 @@ function Main({ onLogout, startGroupId }: { onLogout: () => void; startGroupId?:
       )}
       {bellOpen && (
         <SheetShell title="Avisos" onClose={() => setBellOpen(false)}>
-          {notifs.length === 0 ? <div className="empty">No tienes avisos todavía.</div> : (
+          {notifs.length === 0 ? <Empty icon="bell" title="No tienes avisos todavía" text="Aquí verás encuestas, partidos nuevos y cambios." /> : (
             <>
               {unreadNotifs > 0 && <button className="btn ghost sm" style={{ alignSelf: 'flex-end' }} onClick={readAll}>Marcar todas como leídas</button>}
               <div className="notiflist">
@@ -2681,7 +2874,7 @@ function Main({ onLogout, startGroupId }: { onLogout: () => void; startGroupId?:
       )}
       {sheet && sheet.t === 'text' && <TextSheet text={sheet.text} onClose={() => setSheet(null)} />}
       {sheet && sheet.t === 'result' && <ResultSheet s={sheet} call={call} flash={flash} onClose={() => setSheet(null)} />}
-      <div className={`toast${toastMsg ? ' show' : ''}`} role="status">{toastMsg}</div>
+      <div key={toastKey} className={`toast${toastMsg ? ' show' : ''}`} role="status" aria-live="polite">{toastMsg}</div>
     </div>
   );
 }
