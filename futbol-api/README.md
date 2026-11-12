@@ -178,3 +178,27 @@ resultado requieren ser owner o co-admin del grupo.
 | POST | `/api/matches/seen` | sesión |
 | GET | `/api/notifications` | sesión |
 | POST | `/api/notifications/read` | sesión (`{ all: true }` o `{ ids }`) |
+
+## Actualización v1.5 · Notificaciones push en el móvil
+
+### Pasos
+1. **Supabase → SQL Editor**: ejecuta `supabase/07_migracion_v1.5_push.sql`.
+2. Variables en Vercel (ya creadas): `NEXT_PUBLIC_VAPID_PUBLIC_KEY`, `VAPID_PRIVATE_KEY` (secreta), `VAPID_SUBJECT`.
+   Si algún día cambias las claves VAPID, todos los usuarios tendrán que volver a activar las notificaciones.
+
+### Cómo funciona
+- **Web Push** (sin Firebase ni app nativa): `public/sw.js` recibe la notificación aunque la app esté cerrada,
+  la muestra en la pantalla de bloqueo y al tocarla abre el partido o el chat.
+- **Android / ordenador**: Perfil → “Activar notificaciones” (o el aviso de la pestaña Partidos).
+- **iPhone (iOS 16.4+)**: primero Safari → Compartir → “Añadir a pantalla de inicio”, abrir la app desde ese icono
+  y activar las notificaciones. La app muestra estos pasos a quien entra desde iPhone.
+- Cada usuario puede tener varios dispositivos (`push_subscriptions`) y elegir qué recibe: partidos nuevos y
+  cambios, encuestas nuevas y mensajes del chat (`players.notify_*`). Los mensajes de un mismo grupo se agrupan en
+  una sola notificación que se va actualizando.
+- Al acabar un partido, el admin y los co-admins reciben “🏁 Partido finalizado” para registrar resultado y MVP.
+
+| Método | Ruta | Para qué |
+|---|---|---|
+| POST / DELETE | `/api/push/subscribe` | Guardar / quitar este dispositivo |
+| POST | `/api/push/test` | Notificación de prueba a tus dispositivos |
+| PATCH | `/api/me` | `notifyChat`, `notifyPolls`, `notifyMatches` |
