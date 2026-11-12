@@ -3,7 +3,7 @@ import { handle, readBody, HttpError } from '@/lib/http';
 import { requireUser } from '@/lib/auth';
 import {
   assertGroup, assertUuid, loadConvocados, startersFor, fromAssignment, finishDueMatches, systemMessage,
-  parseGuest, guestKey, isGuestKey, MIN_PLAYERS, type Convocado,
+  parseGuest, guestKey, isGuestKey, MIN_PLAYERS, type Convocado, type GuestInput,
 } from '@/lib/queries';
 import { balanceTeams, toSnapshotRows } from '@/lib/teamBalancer';
 import { statsOf, matchWhen } from '@/lib/matches';
@@ -54,7 +54,7 @@ export const POST = handle(async (req) => {
     throw new HttpError(400, 'La fecha y hora del partido deben ser posteriores al momento actual');
   }
 
-  const guests = (Array.isArray(b.guests) ? b.guests : []).map(parseGuest);
+  const guests: GuestInput[] = (Array.isArray(b.guests) ? (b.guests as unknown[]) : []).map(parseGuest);
   const memberCount = Array.isArray(b.playerIds) ? b.playerIds.length : 0;
   if (memberCount + guests.length < MIN_PLAYERS) {
     throw new HttpError(400, `No son suficientes jugadores para crear un partido (mínimo ${MIN_PLAYERS})`);
