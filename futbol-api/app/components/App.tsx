@@ -4,6 +4,9 @@ import { useCallback, useEffect, useRef, useState } from 'react';
 import type { CSSProperties, ReactNode } from 'react';
 import type { Session } from '@supabase/supabase-js';
 import { sb } from '@/lib/supabaseBrowser';
+import {
+  currentSubscription, pushState, registerSW, subscribePush, unsubscribePush, type PushState,
+} from '@/lib/webPushClient';
 
 /* ================================ tipos ================================ */
 type Pos = 'GK' | 'DEF' | 'ATT';
@@ -16,6 +19,7 @@ type Player = {
 type Me = {
   id: string; name: string; nick: string | null; lastName: string | null; displayName: string;
   pos: Pos; level: number; email: string | null;
+  notifyChat: boolean; notifyPolls: boolean; notifyMatches: boolean;
 };
 type Notif = {
   id: string; groupId: string | null; groupName: string | null; type: 'chat' | 'poll' | 'match_created' | 'match_updated';
@@ -131,6 +135,7 @@ const isFutureDT = (v: string) => !!v && new Date(v).getTime() > Date.now();
 const MIN_PLAYERS = 10;
 const badgeTxt = (n: number) => (n > 99 ? '+99' : String(n));
 const PENDING_INVITE = 'eqfc-pending-invite';
+const PUSH_DISMISSED = 'eqfc-push-dismissed';
 
 /** Titulares primero; dentro de cada bloque, el portero arriba y luego por estrellas. */
 function sortTeam(list: Entry[]) {
@@ -1110,6 +1115,132 @@ function MatchEditor({ id, call, flash, onClose, onSaved }: {
   );
 }
 
+/* ============================ Notificaciones push ============================ */
+/** Activar/desactivar en este dispositivo + qué avisos quiere cada uno (se guardan en su perfil). */
+function PushSettings({ me, call, flash, onSaved }: { me: Me; call: Call; flash: (m: string) => void; onSaved: (m: Me) => void }) {
+  const [state, setState] = useState<PushState | null>(null);
+  const [busy, setBusy] = useState(false);
+  const [prefs, setPrefs] = useState({ notifyChat: me.notifyChat, notifyPolls: me.notifyPolls, notifyMatches: me.notifyMatches });
+  useEffect(() => { pushState().then(setState); }, []);
+
+  const enable = async () => {
+    setBusy(true);
+    try {
+      const sub = await subscribePush();
+      await call('/api/push/subscribe', 'POST', sub);
+      setState('on');
+      flash('Notificaciones activadas en este dispositivo');
+    } catch (e) { flash(msg(e)); setState(await pushState()); } finally { setBusy(false); }
+  };
+  const disable = async () => {
+    setBusy(true);
+    try {
+      const endpoint = await unsubscribePush();
+      if (endpoint) await call('/api/push/subscribe', 'DELETE', { endpoint });
+      setState('off');
+      flash('Notificaciones desactivadas en este dispositivo');
+    } catch (e) { flash(msg(e)); } finally { setBusy(false); }
+  };
+  const test = async () => {
+    try { await call('/api/push/test', 'POST'); flash('Enviada: debería llegarte en unos segundos'); } catch (e) { flash(msg(e)); }
+  };
+  const toggle = async (k: keyof typeof prefs) => {
+    const next = { ...prefs, [k]: !prefs[k] };
+    setPrefs(next);
+    try { onSaved(await call<Me>('/api/me', 'PATCH', { [k]: next[k] })); } catch (e) { flash(msg(e)); setPrefs(prefs); }
+  };
+
+  return (
+    <div className="card form" style={{ marginTop: 10 }}>
+      <div className="lbl"><Icon n="bell" /> Notificaciones en el móvil</div>
+      {state === null ? <span className="note">Comprobando…</span>
+        : state === 'on' ? (
+          <>
+            <span className="note ok">✅ Activadas en este dispositivo. Te llegarán aunque tengas la app cerrada.</span>
+            <div className="two">
+              <button className="btn sm" onClick={test}>Enviar prueba</button>
+              <button className="btn ghost sm" disabled={busy} onClick={disable}>Desactivar aquí</button>
+            </div>
+          </>
+        ) : state === 'off' ? (
+          <>
+            <span className="note">Recibe los avisos como en WhatsApp: encuestas, partidos, cambios y mensajes.</span>
+            <button className="btn primary sm" disabled={busy} onClick={enable}>{busy ? 'Activando…' : 'Activar notificaciones'}</button>
+          </>
+        ) : state === 'denied' ? (
+          <span className="errtxt">Has bloqueado las notificaciones para esta web. Actívalas en los ajustes del navegador (icono del candado junto a la dirección) y vuelve aquí.</span>
+        ) : state === 'ios-needs-install' ? <IosInstallSteps />
+          : <span className="note">Este navegador no admite notificaciones. Prueba con Chrome, Edge, Firefox o Safari actualizado.</span>}
+
+      <div className="lbl" style={{ marginTop: 8 }}>Avisarme de…</div>
+      {([
+        ['notifyMatches', 'Partidos nuevos y cambios'],
+        ['notifyPolls', 'Encuestas nuevas'],
+        ['notifyChat', 'Mensajes del chat'],
+      ] as [keyof typeof prefs, string][]).map(([k, label]) => (
+        <button key={k} className={`togglerow${prefs[k] ? ' on' : ''}`} onClick={() => toggle(k)} aria-pressed={prefs[k]}>
+          <span>{label}</span><i />
+        </button>
+      ))}
+      <span className="note">Se aplica a todos tus dispositivos. La campana de la app siempre guarda los avisos.</span>
+    </div>
+  );
+}
+
+function IosInstallSteps() {
+  return (
+    <div className="iosbox">
+      <b>En iPhone hay que instalar la app primero</b>
+      <ol>
+        <li>Abre esta web en <b>Safari</b>.</li>
+        <li>Pulsa <b>Compartir</b> (el cuadrado con la flecha hacia arriba).</li>
+        <li>Elige <b>“Añadir a pantalla de inicio”</b>.</li>
+        <li>Abre Equilibrio FC <b>desde el icono nuevo</b>, entra en tu perfil y pulsa “Activar notificaciones”.</li>
+      </ol>
+      <small>Hace falta iOS 16.4 o posterior.</small>
+    </div>
+  );
+}
+
+/** Aviso en Partidos para activar las notificaciones (o instalar la app en iPhone). */
+function PushBanner({ call, flash }: { call: Call; flash: (m: string) => void }) {
+  const [state, setState] = useState<PushState | null>(null);
+  const [hidden, setHidden] = useState(true);
+  const [busy, setBusy] = useState(false);
+  useEffect(() => {
+    try { setHidden(localStorage.getItem(PUSH_DISMISSED) === '1'); } catch { setHidden(false); }
+    pushState().then(setState);
+  }, []);
+  const dismiss = () => { setHidden(true); try { localStorage.setItem(PUSH_DISMISSED, '1'); } catch { /* nada */ } };
+  if (hidden || !state || (state !== 'off' && state !== 'ios-needs-install')) return null;
+  if (state === 'ios-needs-install') {
+    return (
+      <div className="card pushbanner">
+        <IosInstallSteps />
+        <button className="btn ghost sm" onClick={dismiss}>Ahora no</button>
+      </div>
+    );
+  }
+  const enable = async () => {
+    setBusy(true);
+    try {
+      await call('/api/push/subscribe', 'POST', await subscribePush());
+      flash('Notificaciones activadas');
+      setState('on');
+    } catch (e) { flash(msg(e)); setState(await pushState()); } finally { setBusy(false); }
+  };
+  return (
+    <div className="card pushbanner">
+      <b><Icon n="bell" /> Activa las notificaciones</b>
+      <span>Entérate al momento de encuestas, partidos nuevos, cambios y mensajes, aunque tengas la app cerrada.</span>
+      <div className="two">
+        <button className="btn primary sm" disabled={busy} onClick={enable}>{busy ? 'Activando…' : 'Activar'}</button>
+        <button className="btn ghost sm" onClick={dismiss}>Ahora no</button>
+      </div>
+    </div>
+  );
+}
+
 /* ================================== Hojas ================================== */
 function PlayerSheet({ init, groupId, myRole, meId, accounts, call, flash, onClose, onDone }: {
   init: PlayerInit; groupId: string; myRole: Role; meId: string; accounts: Player[];
@@ -1331,6 +1462,7 @@ function ProfileSheet({ me, call, flash, onClose, onSaved, onLogout }: {
       </div>
       <div className="lbl" style={{ marginTop: 6 }}>Tu nivel<span className="lockt">el admin de cada grupo puede ajustarlo</span></div>
       <div className="starbox"><Stars v={s.level} size={34} onPick={(v) => setS({ ...s, level: Math.max(1, v) })} /><b className="big">{f1(s.level)}</b></div>
+      <PushSettings me={me} call={call} flash={flash} onSaved={onSaved} />
       <div className="sheet-actions">
         <button className="btn ghost" onClick={onLogout}>Cerrar sesión</button>
         <button className="btn primary" onClick={save} disabled={busy}>Guardar</button>
@@ -2030,6 +2162,29 @@ function Main({ onLogout, startGroupId }: { onLogout: () => void; startGroupId?:
     if (!groups.length && groupId) setGroupIdState('');
   }, [groups, groupId, loaded, setGroupId]);
 
+  /* ---------- notificaciones push: service worker, enlaces de las notificaciones ---------- */
+  const openUrl = useCallback((href: string) => {
+    let u: URL;
+    try { u = new URL(href, window.location.origin); } catch { return; }
+    const match = u.searchParams.get('match');
+    const group = u.searchParams.get('group');
+    if (match) { setView({ t: 'match', id: match }); return; }
+    if (group) { setGroupId(group); setView(null); setTab(u.searchParams.get('tab') === 'chat' ? 'chat' : 'matches'); }
+  }, [setGroupId]);
+  useEffect(() => {
+    // Al abrir la app desde una notificación (/?match=… o /?group=…&tab=chat)
+    if (window.location.search) { openUrl(window.location.href); window.history.replaceState(null, '', '/'); }
+    registerSW().then(async () => {
+      // Si este dispositivo ya tenía permiso, se vuelve a asociar a la cuenta (p. ej. tras cambiar de usuario)
+      const sub = await currentSubscription().catch(() => null);
+      if (sub) call('/api/push/subscribe', 'POST', sub).catch(() => undefined);
+    });
+    if (!('serviceWorker' in navigator)) return;
+    const onMsg = (e: MessageEvent) => { if (e.data?.type === 'open' && typeof e.data.url === 'string') openUrl(e.data.url); };
+    navigator.serviceWorker.addEventListener('message', onMsg);
+    return () => navigator.serviceWorker.removeEventListener('message', onMsg);
+  }, [openUrl, call]);
+
   /* ---------- avisos: campana, mensajes sin leer y partidos nuevos ---------- */
   const loadNotifs = useCallback(() => {
     call<{ items: Notif[]; unread: number }>('/api/notifications').then((r) => { setNotifs(r.items); setUnreadNotifs(r.unread); }).catch(() => undefined);
@@ -2182,6 +2337,7 @@ function Main({ onLogout, startGroupId }: { onLogout: () => void; startGroupId?:
 
             {tab === 'matches' && (
               <>
+                {loaded && <PushBanner call={call} flash={flash} />}
                 {managed.length > 0 && <button className="btn primary block" onClick={() => setView({ t: 'new' })}><Icon n="plus" /> Nuevo partido</button>}
                 {loaded && groups.length === 0 && (
                   <div className="empty">Aún no estás en ningún grupo. Crea el tuyo en Plantilla o pide a tu admin el enlace de invitación.</div>

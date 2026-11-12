@@ -326,3 +326,17 @@ input:disabled { opacity: .55; }
 .checkmail ol { text-align: left; margin: 6px 0 0; padding-left: 20px; display: grid; gap: 6px; color: var(--muted); font-size: 13.5px; }
 .bigicon { width: 64px; height: 64px; border-radius: 20px; display: grid; place-items: center; background: var(--grass-dim); color: var(--grass); }
 .bigicon svg { width: 34px; height: 34px; }
+
+/* ===================== v1.5 · notificaciones push ===================== */
+.note.ok { color: var(--grass); }
+.togglerow { display: flex; align-items: center; justify-content: space-between; gap: 10px; width: 100%; padding: 9px 12px; border-radius: 12px; background: var(--surface); border: 1px solid var(--line); font-size: 13.5px; text-align: left; }
+.togglerow i { width: 38px; height: 22px; border-radius: 999px; background: var(--line-2); position: relative; flex: none; transition: background .15s; }
+.togglerow i::after { content: ''; position: absolute; top: 3px; left: 3px; width: 16px; height: 16px; border-radius: 50%; background: var(--fg); transition: transform .15s; }
+.togglerow.on i { background: var(--grass); }
+.togglerow.on i::after { transform: translateX(16px); background: var(--grass-ink); }
+.pushbanner { display: flex; flex-direction: column; gap: 8px; border-color: #1f5c37; background: var(--grass-dim); }
+.pushbanner b { display: inline-flex; align-items: center; gap: 6px; color: var(--grass); }
+.pushbanner svg { width: 18px; height: 18px; }
+.iosbox { display: flex; flex-direction: column; gap: 6px; }
+.iosbox ol { margin: 0; padding-left: 20px; display: grid; gap: 4px; font-size: 13px; color: var(--fg); }
+.iosbox small { color: var(--muted); }
