@@ -1,7 +1,7 @@
 import { tx } from '@/lib/db';
 import { handle, HttpError } from '@/lib/http';
 import { requireUser } from '@/lib/auth';
-import { assertUuid, systemMessage } from '@/lib/queries';
+import { assertUniqueNames, assertUuid, systemMessage } from '@/lib/queries';
 
 // Unirse a un grupo con el enlace de invitación (requiere sesión).
 export const POST = handle(async (req, { params }) => {
@@ -31,6 +31,10 @@ export const POST = handle(async (req, { params }) => {
       [group.id, me.playerId]
     );
     await c.query('UPDATE players SET is_active = TRUE, deleted_at = NULL WHERE id = $1', [me.playerId]);
+    // Nombre visible único en el grupo (si choca, se deshace la unión y se pide cambiar el apodo)
+    await assertUniqueNames(c, me.playerId, group.id).catch((e) => {
+      throw new HttpError(409, `${e.message} Cámbialo en tu perfil y vuelve a abrir el enlace.`);
+    });
     await systemMessage(c, group.id, `👋 ${me.name} se ha unido al grupo`, { event: 'member_joined', playerId: me.playerId });
     return { groupId: group.id, alreadyMember: false };
   });

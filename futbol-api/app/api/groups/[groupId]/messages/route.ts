@@ -3,6 +3,7 @@ import { handle, readBody, HttpError } from '@/lib/http';
 import { requireUser } from '@/lib/auth';
 import { assertGroup } from '@/lib/queries';
 import { loadPolls, MSG_SELECT } from '@/lib/polls';
+import { notify } from '@/lib/notify';
 
 // Chat del grupo. GET ?before=ISO&limit=50 → página de mensajes (del más antiguo al más nuevo),
 // con el estado de cada encuesta ya calculado.
@@ -40,6 +41,14 @@ export const POST = handle(async (req, { params }) => {
     `INSERT INTO chat_messages (group_id, player_id, type, content) VALUES ($1, $2, 'text', $3) RETURNING id`,
     [groupId, me.playerId, content.trim()]
   );
+  // Quien escribe ya lo ha leído todo
+  await pool.query('UPDATE group_players SET last_read_chat_at = now() WHERE group_id = $1 AND player_id = $2', [groupId, me.playerId]);
   const { rows } = await pool.query(`${MSG_SELECT} WHERE c.id = $1`, [ins.rows[0].id]);
+  // Push al resto (los mensajes de chat no van a la campana: se cuentan con el badge de no leídos)
+  const g = await pool.query('SELECT name FROM groups WHERE id = $1', [groupId]);
+  await notify(pool, {
+    groupId, type: 'chat', recipients: 'members', exclude: me.playerId,
+    title: `${me.name} · ${g.rows[0]?.name ?? 'Chat'}`, body: content.trim().slice(0, 140),
+  });
   return Response.json(rows[0], { status: 201 });
 });

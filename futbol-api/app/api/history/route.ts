@@ -24,7 +24,7 @@ export const GET = handle(async (req) => {
                        'entryId', x.id, 'name', x.name_snapshot,
                        'stars', CASE WHEN gp.role IN ('owner', 'co_admin') THEN x.stars_snapshot::float8 ELSE 0 END,
                        'photo', x.photo_snapshot, 'team', x.team, 'isStarter', x.is_starter,
-                       'pos', x.pos_snapshot, 'nick', x.nick_snapshot)
+                       'pos', x.pos_snapshot, 'nick', x.nick_snapshot, 'isGuest', x.is_guest)
                      ORDER BY x.team, x.is_starter DESC, x.stars_snapshot DESC)
                 FROM match_players x WHERE x.match_id = m.id
             ), '[]'::json) AS roster

@@ -13,7 +13,7 @@ export const GET = handle(async (req) => {
   await finishDueMatches(pool);
 
   const { rows } = await pool.query(
-    `SELECT p.id AS "playerId", p.name, p.nick, p.pos, gp.stars::float8 AS stars,
+    `SELECT p.id AS "playerId", p.display_name AS name, p.nick, p.pos, gp.stars::float8 AS stars,
             count(*) FILTER (WHERE m.score_a IS NOT NULL)::int AS pj,
             count(*) FILTER (WHERE m.score_a IS NOT NULL AND (
                  (mp.team = 'A' AND m.score_a > m.score_b) OR (mp.team = 'B' AND m.score_b > m.score_a)))::int AS w,
@@ -24,7 +24,7 @@ export const GET = handle(async (req) => {
        LEFT JOIN matches m ON m.id = mp.match_id AND m.group_id = gp.group_id AND m.status = 'finished'
       WHERE gp.group_id = $1 AND gp.is_active AND p.is_active
       GROUP BY p.id, gp.stars
-      ORDER BY p.name`,
+      ORDER BY p.display_name`,
     [groupId]
   );
   // Las estrellas solo las ven el admin y los co-admins

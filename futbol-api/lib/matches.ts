@@ -4,8 +4,16 @@ import { evaluateSplit } from './teamBalancer';
 
 export type EntryRow = {
   id: string; playerId: string | null; name: string; nick: string | null; pos: string;
-  stars: number; photo: string | null; team: 'A' | 'B'; isStarter: boolean;
+  stars: number; photo: string | null; team: 'A' | 'B'; isStarter: boolean; isGuest?: boolean;
 };
+
+/** "jueves, 20 de noviembre, 21:00" en la zona horaria de la app (mensajes del chat y avisos). */
+export function matchWhen(d: Date | string) {
+  return new Intl.DateTimeFormat('es-ES', {
+    weekday: 'long', day: 'numeric', month: 'long', hour: '2-digit', minute: '2-digit',
+    timeZone: process.env.APP_TIMEZONE || 'Europe/Madrid',
+  }).format(new Date(d));
+}
 
 /** Estadísticas del reparto que se guardan en matches.balance_stats (se muestran en la app). */
 export function statsOf(result: any) {
@@ -24,7 +32,7 @@ export function statsOf(result: any) {
 export async function loadDetail(db: Db, playerId: string, id: string) {
   const m = await db.query(
     `SELECT m.id, m.group_id AS "groupId", g.name AS "groupName", m.scheduled_at AS "scheduledAt",
-            m.location, m.format, m.starters_per_side AS "startersPerSide", m.status,
+            m.location, m.notes, m.updated_at AS "updatedAt", m.format, m.starters_per_side AS "startersPerSide", m.status,
             m.score_a AS "scoreA", m.score_b AS "scoreB", m.mvp_entry_id AS "mvpEntryId",
             m.balance_stats AS "balanceStats",
             (m.status = 'finished' AND m.score_a IS NULL) AS "needsResult",
@@ -40,7 +48,7 @@ export async function loadDetail(db: Db, playerId: string, id: string) {
   const roster = await db.query(
     `SELECT id AS "entryId", player_id AS "playerId", name_snapshot AS name, nick_snapshot AS nick,
             pos_snapshot AS pos, stars_snapshot::float8 AS stars, photo_snapshot AS photo,
-            team, is_starter AS "isStarter"
+            team, is_starter AS "isStarter", is_guest AS "isGuest"
        FROM match_players WHERE match_id = $1
       ORDER BY team, is_starter DESC, stars_snapshot DESC`,
     [id]
@@ -70,7 +78,8 @@ export async function lockPending(db: Db, playerId: string, id: string) {
 export async function loadEntries(db: Db, matchId: string): Promise<EntryRow[]> {
   const r = await db.query(
     `SELECT id, player_id AS "playerId", name_snapshot AS name, nick_snapshot AS nick, pos_snapshot AS pos,
-            stars_snapshot::float8 AS stars, photo_snapshot AS photo, team, is_starter AS "isStarter"
+            stars_snapshot::float8 AS stars, photo_snapshot AS photo, team, is_starter AS "isStarter",
+            is_guest AS "isGuest"
        FROM match_players WHERE match_id = $1`,
     [matchId]
   );

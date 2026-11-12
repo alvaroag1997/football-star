@@ -135,3 +135,46 @@ arrastrar y soltar, resultado y MVP, Historial, Plantilla, Estadísticas) está 
 
 `POST /api/matches` acepta además `pollId`. Crear, cancelar, regenerar, mover equipos y registrar
 resultado requieren ser owner o co-admin del grupo.
+
+## Actualización v1.4 · Invitados, edición de partidos y avisos
+
+### Pasos
+1. **Supabase → SQL Editor**: ejecuta `supabase/06_migracion_v1.4.sql` (no borra datos, se puede repetir,
+   y la versión v1.3 sigue funcionando con la base migrada).
+2. Despliega. No hay variables de entorno nuevas.
+
+### Qué hay de nuevo
+- **Registro**: además del nombre, es obligatorio un **apellido o apodo**. El nombre visible se forma solo
+  (`players.display_name`): “Carlos M.” o “Carlos 'El Mago'”. No puede haber dos iguales en un mismo grupo
+  (se comprueba al unirse, al añadir jugadores y al editar perfiles). Quien ya tenía cuenta ve un aviso para completarlo.
+- **Tras registrarse** ya no se queda en el formulario: pantalla “Revisa tu correo” (con botón para reenviar).
+  Si venía de una invitación, la invitación queda guardada en el navegador y al confirmar el email entra al grupo.
+- **Invitados externos**: el admin puede “+ Añadir invitado” en una encuesta (nombre, estrellas, portero).
+  Cuentan para el cupo y pasan al partido con “Crear Partido con Confirmados”. En el partido se guardan en
+  `match_players` con `player_id` NULL e `is_guest = true` (así entran en el reparto, la alineación y el MVP).
+- **Cupo desde 1** en las encuestas, pero **no se puede crear un partido con menos de 10 jugadores**
+  (aviso en rojo y botón desactivado; la API también lo rechaza).
+- **Editar partido** (admin/co-admin, partidos pendientes): fecha, lugar, notas, modalidad, añadir/quitar
+  miembros e invitados, mover entre Equipo A/B, titular/suplente, estrellas para ese partido y botón
+  **Re-equilibrar**. Al guardar se publica un resumen en el chat (“⚠️ El admin ha actualizado el partido…”)
+  y se avisa a los convocados (también a los que salen).
+- **Avisos**: badge con los mensajes sin leer en la pestaña Chat (se pone a 0 al abrirlo), punto en
+  Partidos y etiqueta “Nuevo” en los partidos nuevos o modificados, y **campana** con el historial de avisos
+  (nuevas encuestas, partidos nuevos y cambios) y “Marcar todas como leídas”. Las lecturas se guardan en
+  `group_players.last_read_chat_at` / `last_seen_matches_at`, así cuadran entre dispositivos.
+- **Copiar para WhatsApp**: la convocatoria con emojis, equipos, suplentes e invitados.
+
+> Push: los avisos se envían también a `lib/push.ts`, pero sigue sin proveedor conectado (FCM o Expo),
+> así que de momento son avisos dentro de la app (campana y badges).
+
+### Endpoints nuevos
+| Método | Ruta | Permiso |
+|---|---|---|
+| POST | `/api/groups/:groupId/read` | miembro (`{ what: 'chat' \| 'matches' }`) |
+| POST | `/api/polls/:pollId/guests` | admin·co-admin (`{ name, stars?, pos? }`) |
+| DELETE | `/api/polls/:pollId/guests/:guestId` | admin·co-admin |
+| PUT | `/api/matches/:id` | admin·co-admin (edición completa) |
+| POST | `/api/matches/:id/rebalance` | admin·co-admin (propuesta sin guardar) |
+| POST | `/api/matches/seen` | sesión |
+| GET | `/api/notifications` | sesión |
+| POST | `/api/notifications/read` | sesión (`{ all: true }` o `{ ids }`) |
